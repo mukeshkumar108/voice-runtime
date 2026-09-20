@@ -161,6 +161,7 @@ class GenerateResponseRequest(PipelineMessage):
     runtime_config: RuntimeConfig
     response: RealtimeResponseCreateParams | None = None
     language_code: Optional[str] = None
+    conversation_id: str | None = None
     turn_id: str | None = None
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = None

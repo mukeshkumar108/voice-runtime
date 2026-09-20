@@ -187,6 +187,7 @@ class ResponseHandler(RealtimeBaseHandler):
                 GenerateResponseRequest(
                     runtime_config=cfg,
                     response=event.response,
+                    conversation_id=None if out_of_band else st.conversation_id,
                     turn_id=None if out_of_band else st.speculative_user_turn_id,
                     turn_revision=None if out_of_band else st.speculative_user_turn_revision,
                     speech_stopped_at_s=None if out_of_band else st.speculative_user_speech_stopped_at_s,

@@ -558,6 +558,7 @@ class RealtimeService:
                 GenerateResponseRequest(
                     runtime_config=cfg,
                     language_code=event.language_code,
+                    conversation_id=st.conversation_id,
                     turn_id=event.turn_id,
                     turn_revision=event.turn_revision,
                     speech_stopped_at_s=event.speech_stopped_at_s,
