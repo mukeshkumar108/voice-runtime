@@ -1,3 +1,20 @@
+# Voice Runtime
+=============
+
+> Realtime speech I/O for Companion Runtime. Boring infrastructure on purpose.
+
+**Owns:** VAD, STT, streaming, session transport, barge-in/cancellation, TTS, audio playback, health/readiness.
+
+**Does NOT own:** identity, memory, prompt compilation, model selection, behaviour, response policy, tools, overlays, emotional interpretation, companion identity, Cortex/Synapse reasoning. Those live in Companion Runtime.
+
+Every spoken turn sends one `TurnInput` to the brain (`medium: voice` + transcript + reliability + conversation id) and streams the brain's reply into speech. The frozen boundary is documented in [`docs/VOICE_RUNTIME_CONTRACT.md`](./docs/VOICE_RUNTIME_CONTRACT.md). Local run: [`VOICE_LOCAL_SETUP.md`](./VOICE_LOCAL_SETUP.md).
+
+The default and only production path is `--llm_backend companion-runtime`. Direct LLM backends (`responses-api`, `chat-completions`, `transformers`, `mlx-lm`) are retained solely as a generic diagnostic harness (transport vs brain vs provider faults) with a fixed product-free prompt — see the contract doc.
+
+Upstream engine: [Hugging Face speech-to-speech](https://github.com/huggingface/speech-to-speech) (kept as the `upstream` remote). What follows is the engine documentation.
+
+---
+
 <div align="center">
   <div>&nbsp;</div>
   <img src="https://raw.githubusercontent.com/huggingface/speech-to-speech/main/logo.png" width="600"/>

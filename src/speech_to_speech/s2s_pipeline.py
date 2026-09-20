@@ -594,6 +594,9 @@ def _build_realtime_pipeline_unit(
         should_listen=should_listen,
         chat_size=chat_size,
         speculative_turns=speculative_turns,
+        # The brain executes all tools server-side; voice-side product tools
+        # are advertised only for the direct-LLM diagnostic harness.
+        runtime_tools=module_kwargs.llm_backend != "companion-runtime",
     )
 
     if module_kwargs.enable_live_transcription:

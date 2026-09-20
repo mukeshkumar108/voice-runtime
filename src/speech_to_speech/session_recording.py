@@ -174,14 +174,16 @@ class SessionRecorder:
             channel=os.environ.get("SYNAPSE_CHANNEL", "voice"),
             timezone_name=os.environ.get(
                 "SYNAPSE_USER_TIMEZONE",
-                os.environ.get("SOPHIE_USER_TIMEZONE", "Europe/London"),
+                os.environ.get(
+                    "VOICE_USER_TIMEZONE", os.environ.get("SOPHIE_USER_TIMEZONE", "Europe/London")
+                ),
             ),
             consent_scope=consent_scope,
             providers={
                 key: value
                 for key, value in {
                     "stt": os.environ.get("VOICE_STT_BACKEND", os.environ.get("SOPHIE_STT_BACKEND")),
-                    "llm": os.environ.get("SOPHIE_LLM_MODEL"),
+                    "llm": os.environ.get("VOICE_LLM_MODEL", os.environ.get("SOPHIE_LLM_MODEL")),
                     "tts": os.environ.get("VOICE_TTS_BACKEND", os.environ.get("SOPHIE_TTS_BACKEND")),
                 }.items()
                 if value

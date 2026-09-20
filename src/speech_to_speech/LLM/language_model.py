@@ -40,7 +40,7 @@ from speech_to_speech.LLM.chat import (
     make_user_message,
 )
 from speech_to_speech.LLM.compaction_prompt import CompactGenerateFn, build_compactor
-from speech_to_speech.LLM.sophie_prompt_compiler import add_transcript_uncertainty_overlay
+from speech_to_speech.LLM.diagnostic_prompt import add_transcript_uncertainty_note
 from speech_to_speech.LLM.text_prompt import build_text_system_prompt
 from speech_to_speech.LLM.tool_call.function_call import extract_function_calls_from_text
 from speech_to_speech.LLM.tool_call.function_tool import FunctionTool
@@ -527,7 +527,7 @@ class BaseLanguageModelHandler(BaseHandler[LLMIn, LLMOut], ABC):
         instructions = (
             response.instructions if response and response.instructions else runtime_config.session.instructions
         )
-        instructions = add_transcript_uncertainty_overlay(instructions, request.transcript_uncertainty)
+        instructions = add_transcript_uncertainty_note(instructions, request.transcript_uncertainty)
         tools = response.tools if response and response.tools else runtime_config.session.tools
         tool_choice = response.tool_choice if response and response.tool_choice else runtime_config.session.tool_choice
         self._apply_instructions(

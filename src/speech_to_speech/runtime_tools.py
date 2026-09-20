@@ -30,8 +30,12 @@ class RuntimeToolResult:
     latency_ms: float
 
 
+def _default_timezone() -> str:
+    return os.environ.get("VOICE_USER_TIMEZONE", os.environ.get("SOPHIE_USER_TIMEZONE", "Europe/London"))
+
+
 def runtime_tool_definitions() -> list[dict[str, Any]]:
-    default_timezone = os.environ.get("SOPHIE_USER_TIMEZONE", "Europe/London")
+    default_timezone = _default_timezone()
     return [
         {
             "type": "function",
@@ -84,7 +88,7 @@ def execute_runtime_tool(call: ResponseFunctionToolCall) -> RuntimeToolResult:
         arguments = _parse_arguments(call.arguments)
         if call.name != GET_LOCAL_TIME:
             raise ValueError(f"unsupported runtime tool: {call.name}")
-        timezone_name = arguments.get("timezone") or os.environ.get("SOPHIE_USER_TIMEZONE", "Europe/London")
+        timezone_name = arguments.get("timezone") or _default_timezone()
         if not isinstance(timezone_name, str):
             raise ValueError("timezone must be a string")
         try:

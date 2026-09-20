@@ -28,7 +28,7 @@ from speech_to_speech.LLM.chat import (
     make_user_message,
 )
 from speech_to_speech.LLM.compaction_prompt import CompactGenerateFn, build_compactor
-from speech_to_speech.LLM.sophie_prompt_compiler import SophiePromptCompiler, add_transcript_uncertainty_overlay
+from speech_to_speech.LLM.diagnostic_prompt import DiagnosticPrompt, add_transcript_uncertainty_note
 from speech_to_speech.LLM.text_prompt import build_text_system_prompt
 from speech_to_speech.LLM.utils import remove_unspeechable, resolve_auto_language
 from speech_to_speech.LLM.voice_prompt import build_voice_system_prompt
@@ -157,7 +157,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
             self.request_timeout_s,
             connect=min(10.0, self.request_timeout_s),
         )
-        self.sophie_prompt_compiler = SophiePromptCompiler()
+        self.diagnostic_prompt = DiagnosticPrompt()
 
         self.user_role = user_role
         self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -280,9 +280,9 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         if wants_audio:
             current_turn, recent_context, history_tokens = self._prompt_context(chat)
             if current_turn or recent_context or instructions:
-                compiler = getattr(self, "sophie_prompt_compiler", None)
+                compiler = getattr(self, "diagnostic_prompt", None)
                 if compiler is None:
-                    compiler = self.sophie_prompt_compiler = SophiePromptCompiler()
+                    compiler = self.diagnostic_prompt = DiagnosticPrompt()
                 compiled_instructions = compiler.compile(
                     runtime_config,
                     instructions,
@@ -613,7 +613,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         instructions = (
             response.instructions if response and response.instructions else runtime_config.session.instructions
         ) or ""
-        instructions = add_transcript_uncertainty_overlay(instructions, request.transcript_uncertainty) or ""
+        instructions = add_transcript_uncertainty_note(instructions, request.transcript_uncertainty) or ""
         req_tools = response.tools if response and response.tools else runtime_config.session.tools
         req_tool_choice = (
             response.tool_choice if response and response.tool_choice else runtime_config.session.tool_choice

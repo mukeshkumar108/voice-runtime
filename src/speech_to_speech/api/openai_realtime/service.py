@@ -220,11 +220,16 @@ class RealtimeService:
         should_listen: ThreadingEvent | None = None,
         chat_size: int = 10,
         speculative_turns: SpeculativeTurnTracker | None = None,
+        runtime_tools: bool = True,
     ) -> None:
         self.text_prompt_queue = text_prompt_queue
         self.should_listen = should_listen
         self._chat_size = chat_size
         self.speculative_turns = speculative_turns
+        # Voice-side product tools (e.g. get_local_time) are advertised only
+        # for the direct-LLM diagnostic harness. The companion-runtime path
+        # executes all tools brain-side and must see a tool-free session.
+        self._runtime_tools = runtime_tools
         self._conns: dict[str, ConnState] = {}
         self.total_usage = GlobalUsageMetrics()
 
@@ -252,8 +257,8 @@ class RealtimeService:
             chat=Chat(self._chat_size),
             session=RealtimeSessionCreateRequest(
                 type="realtime",
-                tools=runtime_tool_definitions(),  # type: ignore[arg-type]
-                tool_choice="auto",
+                tools=runtime_tool_definitions() if self._runtime_tools else None,  # type: ignore[arg-type]
+                tool_choice="auto" if self._runtime_tools else None,
             ),
         )
         state = ConnState(runtime_config=runtime_config)

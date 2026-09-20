@@ -1,66 +1,26 @@
 ---
+# Voice Runtime: realtime speech I/O for Companion Runtime.
+#
+# The brain is NOT part of this compose file on purpose: it lives in its own
+# repo/service. Point VOICE_RUNTIME_URL at wherever the brain runs
+# (host network, sibling compose project, or remote host).
 services:
-
-  llama:
-    image: ghcr.io/ggml-org/llama.cpp:server-cuda
-    command:
-      - -hf
-      - ggml-org/gemma-4-E4B-it-GGUF
-      - -np
-      - "2"
-      - -c
-      - "65536"
-      - -fa
-      - "on"
-      - --swa-full
-      - --host
-      - 0.0.0.0
-      - --port
-      - "8080"
-    ports:
-      - 8080:8080/tcp
-    volumes:
-      - ./cache/:/root/.cache/
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              device_ids: ['0']
-              capabilities: [gpu]
-
-  pipeline:
-    depends_on:
-      - llama
+  voice:
     build:
       context: .
       dockerfile: ${DOCKERFILE:-Dockerfile}
-    command:
-      - speech-to-speech
-      - --mode
-      - socket
-      - --recv_host
-      - 0.0.0.0
-      - --send_host
-      - 0.0.0.0
-      - --llm_backend
-      - responses-api
-      - --model_name
-      - ggml-org/gemma-4-E4B-it-GGUF
-      - --responses_api_base_url
-      - http://llama:8080/v1
-      - --responses_api_api_key
-      - ""
-      - --init_chat_role
-      - system
-      - --init_chat_prompt
-      - "You are a helpful assistant"
-    expose:
-      - 12345/tcp
-      - 12346/tcp
     ports:
-      - 12345:12345/tcp
-      - 12346:12346/tcp
+      - ${VOICE_PORT:-3002}:3002/tcp
+    environment:
+      VOICE_PORT: "3002"
+      VOICE_RUNTIME_URL: ${VOICE_RUNTIME_URL:-http://host.docker.internal:8080}
+      VOICE_RUNTIME_SECRET: ${VOICE_RUNTIME_SECRET:?Set VOICE_RUNTIME_SECRET before starting}
+      VOICE_STT_BACKEND: ${VOICE_STT_BACKEND:-elevenlabs-realtime}
+      VOICE_TTS_BACKEND: ${VOICE_TTS_BACKEND:-lemonfox}
+      VOICE_LEMONFOX_VOICE: ${VOICE_LEMONFOX_VOICE:-aoede}
+      LEMONFOX_API_KEY: ${LEMONFOX_API_KEY:-}
+      ELEVENLABS_API_KEY: ${ELEVENLABS_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
     volumes:
       - ./cache/:/root/.cache/
     deploy:

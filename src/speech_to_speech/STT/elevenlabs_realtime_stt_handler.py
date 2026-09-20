@@ -69,8 +69,12 @@ class ElevenLabsRealtimeSTTHandler(BaseSTTHandler):
         self.text_output_queue = text_output_queue
         self.should_listen = should_listen
         self.gen_kwargs = gen_kwargs or {}
-        self.minimum_average_logprob = float(os.getenv("SOPHIE_STT_MIN_AVERAGE_LOGPROB", "-0.7"))
-        self.minimum_word_logprob = float(os.getenv("SOPHIE_STT_MIN_WORD_LOGPROB", "-1.5"))
+        self.minimum_average_logprob = float(
+            os.getenv("VOICE_STT_MIN_AVERAGE_LOGPROB", os.getenv("SOPHIE_STT_MIN_AVERAGE_LOGPROB", "-0.7"))
+        )
+        self.minimum_word_logprob = float(
+            os.getenv("VOICE_STT_MIN_WORD_LOGPROB", os.getenv("SOPHIE_STT_MIN_WORD_LOGPROB", "-1.5"))
+        )
         self.sample_rate = 16000
         self.http_client = httpx.Client(
             timeout=20.0,

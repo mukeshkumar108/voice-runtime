@@ -512,6 +512,17 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
             # can be skipped/cancelled by Starlette's runner and never resume.
             _release_session(unit, session_id)
 
+    @app.get("/healthz")
+    async def healthz() -> dict[str, str]:
+        """Liveness: the HTTP server is up. Does not check the brain."""
+        return {"status": "ok"}
+
+    @app.get("/readyz")
+    async def readyz() -> dict[str, Any]:
+        """Readiness: at least one pipeline unit can accept a session."""
+        idle = sum(1 for u in pool if u.session is None)
+        return {"ready": idle > 0, "idle_units": idle, "size": len(pool)}
+
     @app.get("/v1/usage")
     async def usage_endpoint() -> dict[str, Any]:
         # Aggregate usage across the pool. Numeric fields sum; dict fields (e.g.
