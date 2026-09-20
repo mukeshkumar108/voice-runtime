@@ -28,6 +28,7 @@ from speech_to_speech.LLM.chat import (
     make_user_message,
 )
 from speech_to_speech.LLM.compaction_prompt import CompactGenerateFn, build_compactor
+from speech_to_speech.LLM.sophie_prompt_compiler import SophiePromptCompiler, add_transcript_uncertainty_overlay
 from speech_to_speech.LLM.text_prompt import build_text_system_prompt
 from speech_to_speech.LLM.utils import remove_unspeechable, resolve_auto_language
 from speech_to_speech.LLM.voice_prompt import build_voice_system_prompt
@@ -140,6 +141,7 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         stream_batch_sentences: int = 3,
         enable_lang_prompt: bool = False,
         compact_history: bool = False,
+        fallback_model_name: Optional[str] = None,
         **_kwargs: Any,
     ) -> None:
         self.cancel_scope = cancel_scope
@@ -149,11 +151,13 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         self.stream_batch_sentences = max(1, stream_batch_sentences)
         self.enable_lang_prompt = enable_lang_prompt
         self.gen_kwargs = dict(gen_kwargs)
+        self.fallback_model_name = fallback_model_name
         self.request_timeout_s = float(request_timeout_s)
         self.request_timeout = httpx.Timeout(
             self.request_timeout_s,
             connect=min(10.0, self.request_timeout_s),
         )
+        self.sophie_prompt_compiler = SophiePromptCompiler()
 
         self.user_role = user_role
         self.client = OpenAI(api_key=api_key, base_url=base_url)
@@ -219,6 +223,14 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         """Issue the create() call and return the response or stream."""
         ...
 
+    def _request_with_model_name(self, api_input: Any, optional_kwargs: dict[str, Any], model_name: str) -> Any:
+        original_model_name = self.model_name
+        try:
+            self.model_name = model_name
+            return self._request(api_input, optional_kwargs)
+        finally:
+            self.model_name = original_model_name
+
     @abstractmethod
     def _iter_stream_events(self, api_response: Any) -> Iterator[ProviderEvent]:
         """Map a streaming response to normalised :data:`ProviderEvent`s."""
@@ -259,13 +271,46 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
     def _apply_config(
         self,
         chat: Chat,
+        runtime_config: Any,
         instructions: Optional[str],
         wants_audio: bool = True,
     ) -> None:
-        if instructions:
-            builder = build_voice_system_prompt if wants_audio else build_text_system_prompt
-            full_instructions = builder(instructions)
-            chat.add_item(make_system_message(full_instructions))
+        builder = build_voice_system_prompt if wants_audio else build_text_system_prompt
+        compiled_instructions = instructions or ""
+        if wants_audio:
+            current_turn, recent_context, history_tokens = self._prompt_context(chat)
+            if current_turn or recent_context or instructions:
+                compiler = getattr(self, "sophie_prompt_compiler", None)
+                if compiler is None:
+                    compiler = self.sophie_prompt_compiler = SophiePromptCompiler()
+                compiled_instructions = compiler.compile(
+                    runtime_config,
+                    instructions,
+                    current_turn=current_turn,
+                    recent_context=recent_context,
+                    history_token_estimate=history_tokens,
+                )
+        if not compiled_instructions:
+            return
+        full_instructions = builder(compiled_instructions)
+        chat.add_item(make_system_message(full_instructions))
+
+    @staticmethod
+    def _prompt_context(chat: Chat, recent_messages: int = 6) -> tuple[str, str, int]:
+        """Return the latest user turn and a bounded selection-only history view.
+
+        The history is already sent to the LLM by ``Chat``. This text is used only
+        to choose prompt modules, never appended to the prompt a second time.
+        """
+        messages = [message for message in chat.to_transformers_chat() if message.get("role") != "system"]
+        latest_user = next(
+            (str(message.get("content", "")) for message in reversed(messages) if message.get("role") == "user"),
+            "",
+        )
+        recent = messages[-max(1, recent_messages) :]
+        recent_text = "\n".join(f"{message.get('role', 'unknown')}: {message.get('content', '')}" for message in recent)
+        history_chars = sum(len(str(message.get("content", ""))) for message in messages)
+        return latest_user, recent_text, max(0, round(history_chars / 4))
 
     # ── output helpers ──────────────────────────────────────────────────────--
 
@@ -462,7 +507,24 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
 
         try:
             if error_message is None:
-                api_response = self._request(api_input, optional_kwargs)
+                try:
+                    api_response = self._request(api_input, optional_kwargs)
+                except Exception as exc:
+                    fallback_model_name = getattr(self, "fallback_model_name", None)
+                    if fallback_model_name:
+                        logger.warning(
+                            "Primary model %s failed before generation start (%s). Retrying with fallback model %s",
+                            self.model_name,
+                            exc.__class__.__name__,
+                            fallback_model_name,
+                        )
+                        api_response = self._request_with_model_name(
+                            api_input,
+                            optional_kwargs,
+                            fallback_model_name,
+                        )
+                    else:
+                        raise
             if api_response is not None:
                 events = self._iter_events(api_response)
                 if self.stream:
@@ -551,12 +613,13 @@ class BaseOpenAICompatibleHandler(BaseHandler[LLMIn, LLMOut], ABC):
         instructions = (
             response.instructions if response and response.instructions else runtime_config.session.instructions
         ) or ""
+        instructions = add_transcript_uncertainty_overlay(instructions, request.transcript_uncertainty) or ""
         req_tools = response.tools if response and response.tools else runtime_config.session.tools
         req_tool_choice = (
             response.tool_choice if response and response.tool_choice else runtime_config.session.tool_choice
         )
         wants_audio = response_wants_audio(response)
-        self._apply_config(active_chat, instructions, wants_audio)
+        self._apply_config(active_chat, runtime_config, instructions, wants_audio)
         language_code, lang_name = resolve_auto_language(language_code)
         if lang_name and self.enable_lang_prompt:
             active_chat.add_item(make_user_message(f"Please reply to my message in {lang_name}."))

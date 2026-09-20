@@ -10,6 +10,12 @@ class ResponsesApiLanguageModelHandlerArguments(LanguageModelBaseArguments):
         default="gpt-5.4-mini",
         metadata={"help": "The model to use with the OpenAI-compatible API. Default is 'gpt-5.4-mini'."},
     )
+    responses_api_fallback_model_name: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": "Optional fallback model for the OpenAI-compatible API. Used when the primary model times out or errors before generation starts."
+        },
+    )
     responses_api_api_key: Optional[str] = field(
         default=None,
         metadata={"help": "API key used to authenticate access to the OpenAI-compatible API. Default is None."},

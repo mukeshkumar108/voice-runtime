@@ -2,12 +2,21 @@ import sys
 from dataclasses import fields
 
 from speech_to_speech.arguments_classes.chat_tts_arguments import ChatTTSHandlerArguments
+from speech_to_speech.arguments_classes.companion_runtime_language_model_arguments import (
+    CompanionRuntimeLanguageModelHandlerArguments,
+)
+from speech_to_speech.arguments_classes.elevenlabs_realtime_stt_arguments import (
+    ElevenLabsRealtimeSTTHandlerArguments,
+)
 from speech_to_speech.arguments_classes.facebookmms_tts_arguments import FacebookMMSTTSHandlerArguments
 from speech_to_speech.arguments_classes.faster_whisper_stt_arguments import FasterWhisperSTTHandlerArguments
 from speech_to_speech.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
 from speech_to_speech.arguments_classes.language_model_arguments import LanguageModelHandlerArguments
+from speech_to_speech.arguments_classes.lemonfox_stt_arguments import LemonfoxSTTHandlerArguments
+from speech_to_speech.arguments_classes.lemonfox_tts_arguments import LemonfoxTTSHandlerArguments
 from speech_to_speech.arguments_classes.mlx_audio_whisper_arguments import MLXAudioWhisperSTTHandlerArguments
 from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
+from speech_to_speech.arguments_classes.openrouter_stt_arguments import OpenRouterSTTHandlerArguments
 from speech_to_speech.arguments_classes.paraformer_stt_arguments import ParaformerSTTHandlerArguments
 from speech_to_speech.arguments_classes.parakeet_tdt_arguments import ParakeetTDTSTTHandlerArguments
 from speech_to_speech.arguments_classes.pocket_tts_arguments import PocketTTSHandlerArguments
@@ -31,7 +40,7 @@ def test_release_defaults_match_responses_api_parakeet_qwen3_realtime_profile():
 
     assert module_args.mode == "realtime"
     assert module_args.stt == "parakeet-tdt"
-    assert module_args.llm_backend == "responses-api"
+    assert module_args.llm_backend == "companion-runtime"
     assert module_args.tts == "qwen3"
     assert module_args.log_level == "info"
     assert module_args.enable_live_transcription is True
@@ -67,13 +76,18 @@ EXPECTED_FIELD_TYPES = {
     "faster_whisper_stt_handler_kwargs": FasterWhisperSTTHandlerArguments,
     "mlx_audio_whisper_stt_handler_kwargs": MLXAudioWhisperSTTHandlerArguments,
     "parakeet_tdt_stt_handler_kwargs": ParakeetTDTSTTHandlerArguments,
+    "lemonfox_stt_handler_kwargs": LemonfoxSTTHandlerArguments,
+    "openrouter_stt_handler_kwargs": OpenRouterSTTHandlerArguments,
+    "elevenlabs_realtime_stt_handler_kwargs": ElevenLabsRealtimeSTTHandlerArguments,
     "language_model_handler_kwargs": LanguageModelHandlerArguments,
     "responses_api_language_model_handler_kwargs": ResponsesApiLanguageModelHandlerArguments,
+    "companion_runtime_language_model_handler_kwargs": CompanionRuntimeLanguageModelHandlerArguments,
     "chat_tts_handler_kwargs": ChatTTSHandlerArguments,
     "facebook_mms_tts_handler_kwargs": FacebookMMSTTSHandlerArguments,
     "pocket_tts_handler_kwargs": PocketTTSHandlerArguments,
     "kokoro_tts_handler_kwargs": KokoroTTSHandlerArguments,
     "qwen3_tts_handler_kwargs": Qwen3TTSHandlerArguments,
+    "lemonfox_tts_handler_kwargs": LemonfoxTTSHandlerArguments,
 }
 
 
@@ -89,7 +103,7 @@ def test_parsed_arguments_field_types_match():
         )
 
 
-def test_parse_arguments_default_backend_returns_openai_api():
+def test_parse_arguments_default_backend_returns_companion_runtime():
     original_argv = sys.argv[:]
     try:
         sys.argv = ["speech-to-speech"]
@@ -99,8 +113,23 @@ def test_parse_arguments_default_backend_returns_openai_api():
 
     assert isinstance(args, ParsedArguments)
     assert isinstance(args.module_kwargs, ModuleArguments)
-    assert isinstance(args.responses_api_language_model_handler_kwargs, ResponsesApiLanguageModelHandlerArguments)
+    assert isinstance(
+        args.companion_runtime_language_model_handler_kwargs, CompanionRuntimeLanguageModelHandlerArguments
+    )
     assert isinstance(args.language_model_handler_kwargs, LanguageModelHandlerArguments)
+    assert args.module_kwargs.llm_backend == "companion-runtime"
+
+
+def test_parse_arguments_responses_api_backend_explicit():
+    original_argv = sys.argv[:]
+    try:
+        sys.argv = ["speech-to-speech", "--llm_backend", "responses-api"]
+        args = parse_arguments()
+    finally:
+        sys.argv = original_argv
+
+    assert isinstance(args, ParsedArguments)
+    assert isinstance(args.responses_api_language_model_handler_kwargs, ResponsesApiLanguageModelHandlerArguments)
     assert args.responses_api_language_model_handler_kwargs.model_name == "gpt-5.4-mini"
     assert args.module_kwargs.llm_backend == "responses-api"
 

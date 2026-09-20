@@ -58,12 +58,20 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
             turn_id = transcription.turn_id
             turn_revision = transcription.turn_revision
             speech_stopped_at_s = transcription.speech_stopped_at_s
+            average_logprob = transcription.average_logprob
+            minimum_logprob = transcription.minimum_logprob
+            uncertainty_reason = transcription.uncertainty_reason
+            provider_metadata = transcription.provider_metadata
         else:
             text = transcription
             language_code = None
             turn_id = None
             turn_revision = None
             speech_stopped_at_s = None
+            average_logprob = None
+            minimum_logprob = None
+            uncertainty_reason = None
+            provider_metadata = {}
 
         transcript = str(text)
         # Always close the client-visible transcription item. Empty final STT
@@ -77,6 +85,10 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
                     turn_id=turn_id,
                     turn_revision=turn_revision,
                     speech_stopped_at_s=speech_stopped_at_s,
+                    average_logprob=average_logprob,
+                    minimum_logprob=minimum_logprob,
+                    uncertainty_reason=uncertainty_reason,
+                    provider_metadata=provider_metadata,
                 )
             )
 
@@ -100,4 +112,5 @@ class TranscriptionNotifier(BaseHandler[STTOut, Union[STTOut, LLMIn]]):
                 turn_id=turn_id,
                 turn_revision=turn_revision,
                 speech_stopped_at_s=speech_stopped_at_s,
+                transcript_uncertainty=uncertainty_reason,
             )

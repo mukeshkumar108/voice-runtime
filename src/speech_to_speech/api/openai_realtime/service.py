@@ -17,6 +17,7 @@ from openai.types.realtime import (
     OutputAudioBufferClearEvent,
     RealtimeError,
     RealtimeErrorEvent,
+    RealtimeSessionCreateRequest,
     ResponseAudioDeltaEvent,
     ResponseAudioDoneEvent,
     ResponseAudioTranscriptDoneEvent,
@@ -29,6 +30,9 @@ from openai.types.realtime import (
     ResponseTextDoneEvent,
     SessionCreatedEvent,
     SessionUpdateEvent,
+)
+from openai.types.realtime.realtime_conversation_item_function_call_output import (
+    RealtimeConversationItemFunctionCallOutput,
 )
 from openai.types.realtime.realtime_response_create_params import RealtimeResponseCreateParams
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -54,6 +58,13 @@ from speech_to_speech.pipeline.events import (
 from speech_to_speech.pipeline.messages import GenerateResponseRequest
 from speech_to_speech.pipeline.queue_types import TextPromptItem
 from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
+from speech_to_speech.runtime_tools import (
+    RuntimeToolResult,
+    execute_runtime_tool,
+    is_runtime_tool,
+    runtime_tool_definitions,
+)
+from speech_to_speech.session_recording import SessionRecorder
 from speech_to_speech.utils.utils import _generate_id
 
 logger = logging.getLogger(__name__)
@@ -169,6 +180,10 @@ class ConnState(BaseModel):
     content_index: int = 0
     input_content_index: int = 0
     input_audio_duration_s: float = 0.0
+    output_audio_sent_duration_s: float = 0.0
+    inbound_audio_append_count: int = 0
+    inbound_audio_byte_count: int = 0
+    inbound_audio_last_log_s: float = 0.0
     last_item_id: Optional[str] = None
     current_response_params: RealtimeResponseCreateParams | None = None
     pending_output_text_parts: list[str] = Field(default_factory=list)
@@ -186,6 +201,9 @@ class ConnState(BaseModel):
     # write-back (cross-thread), so they are buffered here and flushed in order
     # once the response completes. See ConversationHandler.flush_deferred_items.
     deferred_items: list[ConversationItem] = Field(default_factory=list)
+    pending_runtime_tool_results: list[RuntimeToolResult] = Field(default_factory=list)
+    runtime_tool_rounds: int = 0
+    session_recorder: SessionRecorder | None = None
 
 
 class RealtimeService:
@@ -230,7 +248,19 @@ class RealtimeService:
         """Register a new connection and return its session_id."""
         if self.speculative_turns:
             self.speculative_turns.reset()
-        state = ConnState(runtime_config=RuntimeConfig(chat=Chat(self._chat_size)))
+        runtime_config = RuntimeConfig(
+            chat=Chat(self._chat_size),
+            session=RealtimeSessionCreateRequest(
+                type="realtime",
+                tools=runtime_tool_definitions(),  # type: ignore[arg-type]
+                tool_choice="auto",
+            ),
+        )
+        state = ConnState(runtime_config=runtime_config)
+        state.session_recorder = SessionRecorder.from_env(
+            session_id=state.session_id,
+            conversation_id=state.conversation_id,
+        )
         self._conns[state.session_id] = state
         self.total_usage.connections += 1
         return state.session_id
@@ -238,6 +268,11 @@ class RealtimeService:
     def unregister(self, conn_id: str) -> None:
         st = self._conns.pop(conn_id, None)
         if st is not None:
+            if st.session_recorder is not None:
+                try:
+                    st.session_recorder.finalize(close_reason="disconnect")
+                except Exception:
+                    logger.exception("Failed to persist session envelope for %s", conn_id)
             # Suppress any in-flight compaction splice so a daemon worker can't
             # mutate a Chat tied to a closed session, and don't make further
             # billable LLM calls on its behalf once the splice is suppressed.
@@ -362,9 +397,10 @@ class RealtimeService:
 
         self._observe_turn_event(event)
         if isinstance(event, AssistantTextEvent):
+            public_event = self._stage_runtime_tools(conn_id, event)
             return self.response.on_assistant_text(
                 conn_id,
-                event,
+                public_event,
                 wait_for_pending_reopen=wait_for_pending_reopen,
             )
         handler = self._pipeline_dispatch.get(type(event))
@@ -372,6 +408,69 @@ class RealtimeService:
             logger.debug("Unhandled pipeline event type: %s", type(event).__name__)
             return []
         return handler(conn_id, event)
+
+    def _stage_runtime_tools(self, conn_id: str, event: AssistantTextEvent) -> AssistantTextEvent:
+        """Execute registered tools and keep their transport internal."""
+        if not event.tools:
+            return event
+        st = self._state(conn_id)
+        public_tools = []
+        for tool in event.tools:
+            if not is_runtime_tool(tool.name):
+                public_tools.append(tool)
+                continue
+            result = execute_runtime_tool(tool)
+            st.pending_runtime_tool_results.append(result)
+            if st.session_recorder is not None:
+                st.session_recorder.record_tool(
+                    call_id=result.call_id,
+                    name=result.name,
+                    arguments=result.arguments,
+                    output=result.output,
+                    latency_ms=result.latency_ms,
+                    response_id=st.current_response_id,
+                )
+            logger.info(
+                "runtime.tool.executed name=%s call_id=%s arguments=%s output=%s latency_ms=%.1f",
+                result.name,
+                result.call_id,
+                result.arguments,
+                result.output,
+                result.latency_ms,
+            )
+        return event.model_copy(update={"tools": public_tools})
+
+    def continue_after_runtime_tools(self, conn_id: str, status: _ResponseStatus) -> list[ServerEvent]:
+        """Append staged outputs and trigger the next model response."""
+        st = self._state(conn_id)
+        pending = st.pending_runtime_tool_results
+        st.pending_runtime_tool_results = []
+        if status != "completed" or not pending:
+            if status != "completed":
+                st.runtime_tool_rounds = 0
+            return []
+        st.runtime_tool_rounds += 1
+        if st.runtime_tool_rounds > 3:
+            logger.error("runtime.tool.max_rounds session=%s", conn_id)
+            st.runtime_tool_rounds = 0
+            return [self.make_error("Runtime tool continuation exceeded three rounds.", "runtime_tool_max_rounds")]
+        for result in pending:
+            st.runtime_config.chat.add_item(
+                RealtimeConversationItemFunctionCallOutput(
+                    id=_generate_id("fco"),
+                    type="function_call_output",
+                    call_id=result.call_id,
+                    output=result.output,
+                )
+            )
+        created = self.response.handle_response_create(conn_id, ResponseCreateEvent(type="response.create"))
+        logger.info(
+            "runtime.tool.continuation session=%s round=%d calls=%s",
+            conn_id,
+            st.runtime_tool_rounds,
+            [result.name for result in pending],
+        )
+        return [created] if created is not None else []
 
     def _is_stale_turn_event(self, event: PipelineEvent, *, wait_for_pending_reopen: bool = True) -> bool | None:
         if self.speculative_turns is None:
@@ -407,6 +506,8 @@ class RealtimeService:
     def _on_transcription_completed(self, conn_id: str, event: TranscriptionCompletedEvent) -> list[ServerEvent]:
         """Handle a final STT transcription: emit protocol event, append to chat, trigger LM."""
         st = self._state(conn_id)
+        st.runtime_tool_rounds = 0
+        st.pending_runtime_tool_results = []
         same_speculative_turn = event.turn_id is not None and event.turn_id == st.speculative_user_turn_id
         if same_speculative_turn:
             st.response_usage.audio_duration_s -= st.speculative_audio_duration_s
@@ -414,6 +515,17 @@ class RealtimeService:
             st.speculative_audio_duration_s = 0.0
 
         events = self.conversation.on_transcription_completed(conn_id, event)
+        if st.session_recorder is not None:
+            st.session_recorder.record_user_transcript(
+                transcript=event.transcript,
+                turn_id=event.turn_id,
+                turn_revision=event.turn_revision,
+                language=event.language_code,
+                average_logprob=event.average_logprob,
+                minimum_logprob=event.minimum_logprob,
+                uncertainty_reason=event.uncertainty_reason,
+                provider_metadata=event.provider_metadata,
+            )
         if event.turn_id is not None:
             st.speculative_audio_duration_s = st.input_audio_duration_s
 
@@ -449,6 +561,7 @@ class RealtimeService:
                     turn_id=event.turn_id,
                     turn_revision=event.turn_revision,
                     speech_stopped_at_s=event.speech_stopped_at_s,
+                    transcript_uncertainty=event.uncertainty_reason,
                 )
             )
 
@@ -487,7 +600,10 @@ class RealtimeService:
         nothing.
         """
         logger.info("Response failed: %s", event.message)
-        if not self._state(conn_id).in_response:
+        st = self._state(conn_id)
+        if not st.in_response:
+            if event.stage == "transcription":
+                return [self.make_error(event.message, "transcription_failed")]
             return []
         events: list[ServerEvent] = [self.make_error(event.message, "response_failed")]
         events.extend(self.response.finish_response(conn_id, status="failed"))

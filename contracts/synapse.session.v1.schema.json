@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://synapse.local/contracts/synapse.session.v1.schema.json",
+  "title": "Synapse Session Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_v",
+    "idempotency_key",
+    "product_id",
+    "agent_id",
+    "user_id",
+    "session_id",
+    "channel",
+    "started_at",
+    "ended_at",
+    "timezone",
+    "close_reason",
+    "consent_scope",
+    "messages",
+    "metadata"
+  ],
+  "properties": {
+    "_v": { "const": "synapse.session.v1" },
+    "idempotency_key": { "type": "string", "minLength": 1 },
+    "product_id": { "type": "string", "minLength": 1 },
+    "agent_id": { "type": "string", "minLength": 1 },
+    "user_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "conversation_id": { "type": ["string", "null"] },
+    "channel": { "type": "string", "minLength": 1 },
+    "started_at": { "type": "string", "format": "date-time" },
+    "ended_at": { "type": "string", "format": "date-time" },
+    "timezone": { "type": "string", "minLength": 1 },
+    "close_reason": { "type": "string", "minLength": 1 },
+    "consent_scope": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "messages": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/message" }
+    },
+    "product_state": { "type": ["object", "null"] },
+    "metadata": { "$ref": "#/$defs/metadata" }
+  },
+  "$defs": {
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "provider_metadata"],
+      "properties": {
+        "type": {
+          "enum": ["realtime_transcript", "model_response", "text_input"]
+        },
+        "provider": { "type": ["string", "null"] },
+        "language": { "type": ["string", "null"] },
+        "average_logprob": { "type": ["number", "null"] },
+        "minimum_logprob": { "type": ["number", "null"] },
+        "uncertainty_reason": { "type": ["string", "null"] },
+        "provider_metadata": { "type": "object" }
+      }
+    },
+    "message": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "role",
+        "content",
+        "timestamp",
+        "channel",
+        "source"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "role": { "enum": ["user", "assistant"] },
+        "content": { "type": "string", "minLength": 1 },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "turn_id": { "type": ["string", "null"] },
+        "turn_revision": { "type": ["integer", "null"] },
+        "response_id": { "type": ["string", "null"] },
+        "channel": { "type": "string", "minLength": 1 },
+        "source": { "$ref": "#/$defs/source" }
+      }
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "call_id",
+        "name",
+        "arguments",
+        "output",
+        "latency_ms",
+        "timestamp"
+      ],
+      "properties": {
+        "call_id": { "type": "string", "minLength": 1 },
+        "name": { "type": "string", "minLength": 1 },
+        "arguments": { "type": "object" },
+        "output": { "type": "string" },
+        "latency_ms": { "type": "number", "minimum": 0 },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "response_id": { "type": ["string", "null"] }
+      }
+    },
+    "cancellation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timestamp", "reason"],
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "reason": { "type": "string", "minLength": 1 },
+        "response_id": { "type": ["string", "null"] }
+      }
+    },
+    "recovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["timestamp", "kind"],
+      "properties": {
+        "timestamp": { "type": "string", "format": "date-time" },
+        "kind": { "type": "string", "minLength": 1 },
+        "detail": { "type": ["string", "null"] }
+      }
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tools",
+        "recoveries",
+        "cancellations",
+        "providers",
+        "latency_summary"
+      ],
+      "properties": {
+        "tools": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/tool" }
+        },
+        "recoveries": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/recovery" }
+        },
+        "cancellations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/cancellation" }
+        },
+        "providers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "latency_summary": {
+          "type": "object",
+          "additionalProperties": { "type": "number" }
+        }
+      }
+    }
+  }
+}

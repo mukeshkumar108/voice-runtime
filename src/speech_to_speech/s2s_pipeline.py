@@ -25,16 +25,25 @@ from speech_to_speech.arguments_classes.chat_completions_language_model_argument
     ChatCompletionsLanguageModelHandlerArguments,
 )
 from speech_to_speech.arguments_classes.chat_tts_arguments import ChatTTSHandlerArguments
+from speech_to_speech.arguments_classes.companion_runtime_language_model_arguments import (
+    CompanionRuntimeLanguageModelHandlerArguments,
+)
+from speech_to_speech.arguments_classes.elevenlabs_realtime_stt_arguments import (
+    ElevenLabsRealtimeSTTHandlerArguments,
+)
 from speech_to_speech.arguments_classes.facebookmms_tts_arguments import FacebookMMSTTSHandlerArguments
 from speech_to_speech.arguments_classes.faster_whisper_stt_arguments import (
     FasterWhisperSTTHandlerArguments,
 )
 from speech_to_speech.arguments_classes.kokoro_tts_arguments import KokoroTTSHandlerArguments
 from speech_to_speech.arguments_classes.language_model_arguments import LanguageModelHandlerArguments
+from speech_to_speech.arguments_classes.lemonfox_stt_arguments import LemonfoxSTTHandlerArguments
+from speech_to_speech.arguments_classes.lemonfox_tts_arguments import LemonfoxTTSHandlerArguments
 from speech_to_speech.arguments_classes.mlx_audio_whisper_arguments import (
     MLXAudioWhisperSTTHandlerArguments,
 )
 from speech_to_speech.arguments_classes.module_arguments import ModuleArguments
+from speech_to_speech.arguments_classes.openrouter_stt_arguments import OpenRouterSTTHandlerArguments
 from speech_to_speech.arguments_classes.paraformer_stt_arguments import ParaformerSTTHandlerArguments
 from speech_to_speech.arguments_classes.parakeet_tdt_arguments import (
     ParakeetTDTSTTHandlerArguments,
@@ -100,13 +109,18 @@ class ParsedArguments:
     faster_whisper_stt_handler_kwargs: FasterWhisperSTTHandlerArguments
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments
+    lemonfox_stt_handler_kwargs: LemonfoxSTTHandlerArguments
+    openrouter_stt_handler_kwargs: OpenRouterSTTHandlerArguments
+    elevenlabs_realtime_stt_handler_kwargs: ElevenLabsRealtimeSTTHandlerArguments
     language_model_handler_kwargs: LanguageModelHandlerArguments
     responses_api_language_model_handler_kwargs: ResponsesApiLanguageModelHandlerArguments
+    companion_runtime_language_model_handler_kwargs: CompanionRuntimeLanguageModelHandlerArguments
     chat_tts_handler_kwargs: ChatTTSHandlerArguments
     facebook_mms_tts_handler_kwargs: FacebookMMSTTSHandlerArguments
     pocket_tts_handler_kwargs: PocketTTSHandlerArguments
     kokoro_tts_handler_kwargs: KokoroTTSHandlerArguments
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments
+    lemonfox_tts_handler_kwargs: LemonfoxTTSHandlerArguments
 
 
 def rename_args(args: Any, prefix: str) -> None:
@@ -134,6 +148,7 @@ def parse_arguments() -> ParsedArguments:
     _backend_lm_class = {
         "responses-api": ResponsesApiLanguageModelHandlerArguments,
         "chat-completions": ChatCompletionsLanguageModelHandlerArguments,
+        "companion-runtime": CompanionRuntimeLanguageModelHandlerArguments,
     }
     _is_json = len(sys.argv) == 2 and sys.argv[1].endswith(".json")
     if _is_json:
@@ -141,7 +156,7 @@ def parse_arguments() -> ParsedArguments:
             _backend = json.load(_f).get("llm_backend")
     else:
         _pre = argparse.ArgumentParser(add_help=False)
-        _pre.add_argument("--llm_backend", default="responses-api")
+        _pre.add_argument("--llm_backend", default="companion-runtime")
         _backend = _pre.parse_known_args()[0].llm_backend
 
     _lm_class = _backend_lm_class.get(_backend, LanguageModelHandlerArguments)
@@ -159,12 +174,16 @@ def parse_arguments() -> ParsedArguments:
             FasterWhisperSTTHandlerArguments,
             MLXAudioWhisperSTTHandlerArguments,
             ParakeetTDTSTTHandlerArguments,
+            LemonfoxSTTHandlerArguments,
+            OpenRouterSTTHandlerArguments,
+            ElevenLabsRealtimeSTTHandlerArguments,
             _lm_class,
             ChatTTSHandlerArguments,
             FacebookMMSTTSHandlerArguments,
             PocketTTSHandlerArguments,
             KokoroTTSHandlerArguments,
             Qwen3TTSHandlerArguments,
+            LemonfoxTTSHandlerArguments,
         )
     )
 
@@ -188,6 +207,9 @@ def parse_arguments() -> ParsedArguments:
         faster_whisper_stt_handler_kwargs=by_type[FasterWhisperSTTHandlerArguments],
         mlx_audio_whisper_stt_handler_kwargs=by_type[MLXAudioWhisperSTTHandlerArguments],
         parakeet_tdt_stt_handler_kwargs=by_type[ParakeetTDTSTTHandlerArguments],
+        lemonfox_stt_handler_kwargs=by_type[LemonfoxSTTHandlerArguments],
+        openrouter_stt_handler_kwargs=by_type[OpenRouterSTTHandlerArguments],
+        elevenlabs_realtime_stt_handler_kwargs=by_type[ElevenLabsRealtimeSTTHandlerArguments],
         language_model_handler_kwargs=by_type.get(LanguageModelHandlerArguments, LanguageModelHandlerArguments()),
         # The OpenAI-compatible slot holds whichever class was registered:
         # ChatCompletions... (a subclass) for chat-completions, else ResponsesApi....
@@ -195,11 +217,15 @@ def parse_arguments() -> ParsedArguments:
             ChatCompletionsLanguageModelHandlerArguments,
             by_type.get(ResponsesApiLanguageModelHandlerArguments, ResponsesApiLanguageModelHandlerArguments()),
         ),
+        companion_runtime_language_model_handler_kwargs=by_type.get(
+            CompanionRuntimeLanguageModelHandlerArguments, CompanionRuntimeLanguageModelHandlerArguments()
+        ),
         chat_tts_handler_kwargs=by_type[ChatTTSHandlerArguments],
         facebook_mms_tts_handler_kwargs=by_type[FacebookMMSTTSHandlerArguments],
         pocket_tts_handler_kwargs=by_type[PocketTTSHandlerArguments],
         kokoro_tts_handler_kwargs=by_type[KokoroTTSHandlerArguments],
         qwen3_tts_handler_kwargs=by_type[Qwen3TTSHandlerArguments],
+        lemonfox_tts_handler_kwargs=by_type[LemonfoxTTSHandlerArguments],
     )
 
 
@@ -293,13 +319,18 @@ def prepare_all_args(
     faster_whisper_stt_handler_kwargs: FasterWhisperSTTHandlerArguments,
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments,
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments,
+    lemonfox_stt_handler_kwargs: LemonfoxSTTHandlerArguments,
+    openrouter_stt_handler_kwargs: OpenRouterSTTHandlerArguments,
+    elevenlabs_realtime_stt_handler_kwargs: ElevenLabsRealtimeSTTHandlerArguments,
     language_model_handler_kwargs: LanguageModelHandlerArguments,
     responses_api_language_model_handler_kwargs: ResponsesApiLanguageModelHandlerArguments,
+    companion_runtime_language_model_handler_kwargs: CompanionRuntimeLanguageModelHandlerArguments,
     chat_tts_handler_kwargs: ChatTTSHandlerArguments,
     facebook_mms_tts_handler_kwargs: FacebookMMSTTSHandlerArguments,
     pocket_tts_handler_kwargs: PocketTTSHandlerArguments,
     kokoro_tts_handler_kwargs: KokoroTTSHandlerArguments,
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
+    lemonfox_tts_handler_kwargs: LemonfoxTTSHandlerArguments,
 ) -> None:
     prepare_module_args(
         module_kwargs,
@@ -308,13 +339,18 @@ def prepare_all_args(
         paraformer_stt_handler_kwargs,
         mlx_audio_whisper_stt_handler_kwargs,
         parakeet_tdt_stt_handler_kwargs,
+        lemonfox_stt_handler_kwargs,
+        openrouter_stt_handler_kwargs,
+        elevenlabs_realtime_stt_handler_kwargs,
         language_model_handler_kwargs,
         responses_api_language_model_handler_kwargs,
+        companion_runtime_language_model_handler_kwargs,
         chat_tts_handler_kwargs,
         facebook_mms_tts_handler_kwargs,
         pocket_tts_handler_kwargs,
         kokoro_tts_handler_kwargs,
         qwen3_tts_handler_kwargs,
+        lemonfox_tts_handler_kwargs,
     )
 
     rename_args(whisper_stt_handler_kwargs, "stt")
@@ -322,13 +358,18 @@ def prepare_all_args(
     rename_args(paraformer_stt_handler_kwargs, "paraformer_stt")
     rename_args(mlx_audio_whisper_stt_handler_kwargs, "mlx_audio_whisper")
     rename_args(parakeet_tdt_stt_handler_kwargs, "parakeet_tdt")
+    rename_args(lemonfox_stt_handler_kwargs, "lemonfox_stt")
+    rename_args(openrouter_stt_handler_kwargs, "openrouter_stt")
+    rename_args(elevenlabs_realtime_stt_handler_kwargs, "elevenlabs_realtime_stt")
     rename_args(language_model_handler_kwargs, "llm")
     rename_args(responses_api_language_model_handler_kwargs, "responses_api")
+    rename_args(companion_runtime_language_model_handler_kwargs, "companion_runtime")
     rename_args(chat_tts_handler_kwargs, "chat_tts")
     rename_args(facebook_mms_tts_handler_kwargs, "facebook_mms")
     rename_args(pocket_tts_handler_kwargs, "pocket_tts")
     rename_args(kokoro_tts_handler_kwargs, "kokoro")
     rename_args(qwen3_tts_handler_kwargs, "qwen3_tts")
+    rename_args(lemonfox_tts_handler_kwargs, "lemonfox_tts")
 
 
 def initialize_queues_and_events() -> dict[str, Any]:
@@ -368,6 +409,9 @@ def _build_pipeline_handlers(
     paraformer_stt_handler_kwargs: ParaformerSTTHandlerArguments,
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments,
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments,
+    lemonfox_stt_handler_kwargs: LemonfoxSTTHandlerArguments,
+    openrouter_stt_handler_kwargs: OpenRouterSTTHandlerArguments,
+    elevenlabs_realtime_stt_handler_kwargs: ElevenLabsRealtimeSTTHandlerArguments,
     language_model_handler_kwargs: LanguageModelHandlerArguments,
     responses_api_language_model_handler_kwargs: ResponsesApiLanguageModelHandlerArguments,
     chat_tts_handler_kwargs: ChatTTSHandlerArguments,
@@ -375,6 +419,8 @@ def _build_pipeline_handlers(
     pocket_tts_handler_kwargs: PocketTTSHandlerArguments,
     kokoro_tts_handler_kwargs: KokoroTTSHandlerArguments,
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
+    lemonfox_tts_handler_kwargs: LemonfoxTTSHandlerArguments,
+    companion_runtime_language_model_handler_kwargs: CompanionRuntimeLanguageModelHandlerArguments,
     speculative_turns: SpeculativeTurnTracker | None = None,
 ) -> list[Any]:
     """Build the shared handler chain: VAD → STT → TranscriptionNotifier → LM → LMOutputProcessor → TTS.
@@ -384,6 +430,13 @@ def _build_pipeline_handlers(
     realtime mode passes a service-driven setup; non-realtime modes inject a RuntimeConfig.
     """
     from speech_to_speech.LLM.lm_output_processor import LMOutputProcessor
+
+    vars(lemonfox_stt_handler_kwargs)["text_output_queue"] = text_output_queue
+    vars(lemonfox_stt_handler_kwargs)["should_listen"] = should_listen
+    vars(openrouter_stt_handler_kwargs)["text_output_queue"] = text_output_queue
+    vars(openrouter_stt_handler_kwargs)["should_listen"] = should_listen
+    vars(elevenlabs_realtime_stt_handler_kwargs)["text_output_queue"] = text_output_queue
+    vars(elevenlabs_realtime_stt_handler_kwargs)["should_listen"] = should_listen
 
     vad = VADHandler(
         stop_event,
@@ -411,6 +464,9 @@ def _build_pipeline_handlers(
         paraformer_stt_handler_kwargs,
         mlx_audio_whisper_stt_handler_kwargs,
         parakeet_tdt_stt_handler_kwargs,
+        lemonfox_stt_handler_kwargs,
+        openrouter_stt_handler_kwargs,
+        elevenlabs_realtime_stt_handler_kwargs,
     )
 
     lm = get_llm_handler(
@@ -420,6 +476,7 @@ def _build_pipeline_handlers(
         lm_response_queue,
         language_model_handler_kwargs,
         responses_api_language_model_handler_kwargs,
+        companion_runtime_language_model_handler_kwargs,
     )
 
     lm_processor = LMOutputProcessor(
@@ -440,6 +497,7 @@ def _build_pipeline_handlers(
         pocket_tts_handler_kwargs,
         kokoro_tts_handler_kwargs,
         qwen3_tts_handler_kwargs,
+        lemonfox_tts_handler_kwargs,
     )
 
     return [vad, stt, transcription_notifier, lm, lm_processor, tts]
@@ -456,6 +514,9 @@ def _build_realtime_pipeline_unit(
     paraformer_stt_handler_kwargs: ParaformerSTTHandlerArguments,
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments,
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments,
+    lemonfox_stt_handler_kwargs: LemonfoxSTTHandlerArguments,
+    openrouter_stt_handler_kwargs: OpenRouterSTTHandlerArguments,
+    elevenlabs_realtime_stt_handler_kwargs: ElevenLabsRealtimeSTTHandlerArguments,
     language_model_handler_kwargs: LanguageModelHandlerArguments,
     responses_api_language_model_handler_kwargs: ResponsesApiLanguageModelHandlerArguments,
     chat_tts_handler_kwargs: ChatTTSHandlerArguments,
@@ -463,6 +524,8 @@ def _build_realtime_pipeline_unit(
     pocket_tts_handler_kwargs: PocketTTSHandlerArguments,
     kokoro_tts_handler_kwargs: KokoroTTSHandlerArguments,
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
+    lemonfox_tts_handler_kwargs: LemonfoxTTSHandlerArguments,
+    companion_runtime_language_model_handler_kwargs: CompanionRuntimeLanguageModelHandlerArguments,
 ) -> "PipelineUnit":
     """Build one isolated realtime pipeline (own queues, events, service, handlers).
 
@@ -479,13 +542,18 @@ def _build_realtime_pipeline_unit(
     paraformer_kw = deepcopy(paraformer_stt_handler_kwargs)
     mlx_audio_whisper_kw = deepcopy(mlx_audio_whisper_stt_handler_kwargs)
     parakeet_kw = deepcopy(parakeet_tdt_stt_handler_kwargs)
+    lemonfox_stt_kw = deepcopy(lemonfox_stt_handler_kwargs)
+    openrouter_stt_kw = deepcopy(openrouter_stt_handler_kwargs)
+    elevenlabs_realtime_stt_kw = deepcopy(elevenlabs_realtime_stt_handler_kwargs)
     lm_kw = deepcopy(language_model_handler_kwargs)
     responses_api_kw = deepcopy(responses_api_language_model_handler_kwargs)
+    companion_runtime_kw = deepcopy(companion_runtime_language_model_handler_kwargs)
     chat_tts_kw = deepcopy(chat_tts_handler_kwargs)
     facebook_mms_kw = deepcopy(facebook_mms_tts_handler_kwargs)
     pocket_tts_kw = deepcopy(pocket_tts_handler_kwargs)
     kokoro_tts_kw = deepcopy(kokoro_tts_handler_kwargs)
     qwen3_tts_kw = deepcopy(qwen3_tts_handler_kwargs)
+    lemonfox_tts_kw = deepcopy(lemonfox_tts_handler_kwargs)
 
     should_listen = Event()
     response_playing = Event()
@@ -505,11 +573,13 @@ def _build_realtime_pipeline_unit(
     for kw in (
         lm_kw,
         responses_api_kw,
+        companion_runtime_kw,
         kokoro_tts_kw,
         qwen3_tts_kw,
         pocket_tts_kw,
         chat_tts_kw,
         facebook_mms_kw,
+        lemonfox_tts_kw,
     ):
         vars(kw)["cancel_scope"] = cancel_scope
         vars(kw)["speculative_turns"] = speculative_turns
@@ -552,13 +622,18 @@ def _build_realtime_pipeline_unit(
         paraformer_stt_handler_kwargs=paraformer_kw,
         mlx_audio_whisper_stt_handler_kwargs=mlx_audio_whisper_kw,
         parakeet_tdt_stt_handler_kwargs=parakeet_kw,
+        lemonfox_stt_handler_kwargs=lemonfox_stt_kw,
+        openrouter_stt_handler_kwargs=openrouter_stt_kw,
+        elevenlabs_realtime_stt_handler_kwargs=elevenlabs_realtime_stt_kw,
         language_model_handler_kwargs=lm_kw,
         responses_api_language_model_handler_kwargs=responses_api_kw,
+        companion_runtime_language_model_handler_kwargs=companion_runtime_kw,
         chat_tts_handler_kwargs=chat_tts_kw,
         facebook_mms_tts_handler_kwargs=facebook_mms_kw,
         pocket_tts_handler_kwargs=pocket_tts_kw,
         kokoro_tts_handler_kwargs=kokoro_tts_kw,
         qwen3_tts_handler_kwargs=qwen3_tts_kw,
+        lemonfox_tts_handler_kwargs=lemonfox_tts_kw,
         speculative_turns=speculative_turns,
     )
     for h in handlers:
@@ -589,13 +664,18 @@ def build_pipeline(
     paraformer_stt_handler_kwargs: ParaformerSTTHandlerArguments,
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments,
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments,
+    lemonfox_stt_handler_kwargs: LemonfoxSTTHandlerArguments,
+    openrouter_stt_handler_kwargs: OpenRouterSTTHandlerArguments,
+    elevenlabs_realtime_stt_handler_kwargs: ElevenLabsRealtimeSTTHandlerArguments,
     language_model_handler_kwargs: LanguageModelHandlerArguments,
     responses_api_language_model_handler_kwargs: ResponsesApiLanguageModelHandlerArguments,
+    companion_runtime_language_model_handler_kwargs: CompanionRuntimeLanguageModelHandlerArguments,
     chat_tts_handler_kwargs: ChatTTSHandlerArguments,
     facebook_mms_tts_handler_kwargs: FacebookMMSTTSHandlerArguments,
     pocket_tts_handler_kwargs: PocketTTSHandlerArguments,
     kokoro_tts_handler_kwargs: KokoroTTSHandlerArguments,
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
+    lemonfox_tts_handler_kwargs: LemonfoxTTSHandlerArguments,
     queues_and_events: dict[str, Any],
 ) -> ThreadManager:
     stop_event = queues_and_events["stop_event"]
@@ -651,13 +731,18 @@ def build_pipeline(
                 paraformer_stt_handler_kwargs=paraformer_stt_handler_kwargs,
                 mlx_audio_whisper_stt_handler_kwargs=mlx_audio_whisper_stt_handler_kwargs,
                 parakeet_tdt_stt_handler_kwargs=parakeet_tdt_stt_handler_kwargs,
+                lemonfox_stt_handler_kwargs=lemonfox_stt_handler_kwargs,
+                openrouter_stt_handler_kwargs=openrouter_stt_handler_kwargs,
+                elevenlabs_realtime_stt_handler_kwargs=elevenlabs_realtime_stt_handler_kwargs,
                 language_model_handler_kwargs=language_model_handler_kwargs,
                 responses_api_language_model_handler_kwargs=responses_api_language_model_handler_kwargs,
+                companion_runtime_language_model_handler_kwargs=companion_runtime_language_model_handler_kwargs,
                 chat_tts_handler_kwargs=chat_tts_handler_kwargs,
                 facebook_mms_tts_handler_kwargs=facebook_mms_tts_handler_kwargs,
                 pocket_tts_handler_kwargs=pocket_tts_handler_kwargs,
                 kokoro_tts_handler_kwargs=kokoro_tts_handler_kwargs,
                 qwen3_tts_handler_kwargs=qwen3_tts_handler_kwargs,
+                lemonfox_tts_handler_kwargs=lemonfox_tts_handler_kwargs,
             )
             for i in range(pool_size)
         ]
@@ -735,13 +820,18 @@ def build_pipeline(
         paraformer_stt_handler_kwargs=paraformer_stt_handler_kwargs,
         mlx_audio_whisper_stt_handler_kwargs=mlx_audio_whisper_stt_handler_kwargs,
         parakeet_tdt_stt_handler_kwargs=parakeet_tdt_stt_handler_kwargs,
+        lemonfox_stt_handler_kwargs=lemonfox_stt_handler_kwargs,
+        openrouter_stt_handler_kwargs=openrouter_stt_handler_kwargs,
+        elevenlabs_realtime_stt_handler_kwargs=elevenlabs_realtime_stt_handler_kwargs,
         language_model_handler_kwargs=language_model_handler_kwargs,
         responses_api_language_model_handler_kwargs=responses_api_language_model_handler_kwargs,
+        companion_runtime_language_model_handler_kwargs=companion_runtime_language_model_handler_kwargs,
         chat_tts_handler_kwargs=chat_tts_handler_kwargs,
         facebook_mms_tts_handler_kwargs=facebook_mms_tts_handler_kwargs,
         pocket_tts_handler_kwargs=pocket_tts_handler_kwargs,
         kokoro_tts_handler_kwargs=kokoro_tts_handler_kwargs,
         qwen3_tts_handler_kwargs=qwen3_tts_handler_kwargs,
+        lemonfox_tts_handler_kwargs=lemonfox_tts_handler_kwargs,
     )
 
     return ThreadManager([*comms_handlers, *pipeline_handlers])
@@ -758,6 +848,9 @@ def get_stt_handler(
     paraformer_stt_handler_kwargs: ParaformerSTTHandlerArguments,
     mlx_audio_whisper_stt_handler_kwargs: MLXAudioWhisperSTTHandlerArguments,
     parakeet_tdt_stt_handler_kwargs: ParakeetTDTSTTHandlerArguments,
+    lemonfox_stt_handler_kwargs: LemonfoxSTTHandlerArguments,
+    openrouter_stt_handler_kwargs: OpenRouterSTTHandlerArguments,
+    elevenlabs_realtime_stt_handler_kwargs: ElevenLabsRealtimeSTTHandlerArguments,
 ) -> BaseHandler[STTIn, STTOut]:
     from speech_to_speech.STT.base_stt_handler import BaseSTTHandler
 
@@ -841,9 +934,42 @@ def get_stt_handler(
                 setup_kwargs=setup_kwargs,
             )
         )
+    elif module_kwargs.stt == "lemonfox":
+        from speech_to_speech.STT.lemonfox_stt_handler import LemonfoxSTTHandler
+
+        return with_speculative_turns(
+            LemonfoxSTTHandler(
+                stop_event,
+                queue_in=spoken_prompt_queue,
+                queue_out=text_prompt_queue,
+                setup_kwargs=vars(lemonfox_stt_handler_kwargs),
+            )
+        )
+    elif module_kwargs.stt == "openrouter-parakeet":
+        from speech_to_speech.STT.openrouter_stt_handler import OpenRouterSTTHandler
+
+        return with_speculative_turns(
+            OpenRouterSTTHandler(
+                stop_event,
+                queue_in=spoken_prompt_queue,
+                queue_out=text_prompt_queue,
+                setup_kwargs=vars(openrouter_stt_handler_kwargs),
+            )
+        )
+    elif module_kwargs.stt == "elevenlabs-realtime":
+        from speech_to_speech.STT.elevenlabs_realtime_stt_handler import ElevenLabsRealtimeSTTHandler
+
+        return with_speculative_turns(
+            ElevenLabsRealtimeSTTHandler(
+                stop_event,
+                queue_in=spoken_prompt_queue,
+                queue_out=text_prompt_queue,
+                setup_kwargs=vars(elevenlabs_realtime_stt_handler_kwargs),
+            )
+        )
     else:
         raise ValueError(
-            "The STT should be either whisper, whisper-mlx, mlx-audio-whisper, faster-whisper, parakeet-tdt, or paraformer."
+            "The STT should be either whisper, whisper-mlx, mlx-audio-whisper, faster-whisper, parakeet-tdt, paraformer, lemonfox, openrouter-parakeet, or elevenlabs-realtime."
         )
 
 
@@ -854,7 +980,18 @@ def get_llm_handler(
     lm_response_queue: Queue[LMOutItem],
     language_model_handler_kwargs: LanguageModelHandlerArguments,
     responses_api_language_model_handler_kwargs: ResponsesApiLanguageModelHandlerArguments,
+    companion_runtime_language_model_handler_kwargs: CompanionRuntimeLanguageModelHandlerArguments,
 ) -> BaseHandler[LLMIn, LLMOut]:
+    if module_kwargs.llm_backend == "companion-runtime":
+        from speech_to_speech.LLM.companion_runtime_language_model import CompanionRuntimeModelHandler
+
+        return CompanionRuntimeModelHandler(
+            stop_event,
+            queue_in=text_prompt_queue,
+            queue_out=lm_response_queue,
+            setup_kwargs=vars(companion_runtime_language_model_handler_kwargs),
+        )
+
     if module_kwargs.llm_backend == "responses-api":
         from speech_to_speech.LLM.responses_api_language_model import ResponsesApiModelHandler
 
@@ -901,7 +1038,9 @@ def get_llm_handler(
             setup_kwargs=lm_kwargs,
         )
 
-    raise ValueError("The LLM should be either transformers, mlx-lm, responses-api or chat-completions")
+    raise ValueError(
+        "The LLM should be either transformers, mlx-lm, responses-api, chat-completions or companion-runtime"
+    )
 
 
 def get_tts_handler(
@@ -915,6 +1054,7 @@ def get_tts_handler(
     pocket_tts_handler_kwargs: PocketTTSHandlerArguments,
     kokoro_tts_handler_kwargs: KokoroTTSHandlerArguments,
     qwen3_tts_handler_kwargs: Qwen3TTSHandlerArguments,
+    lemonfox_tts_handler_kwargs: LemonfoxTTSHandlerArguments,
 ) -> BaseHandler[TTSIn, TTSOut]:
     if module_kwargs.tts == "chatTTS":
         try:
@@ -977,8 +1117,18 @@ def get_tts_handler(
             setup_args=(should_listen,),
             setup_kwargs=vars(qwen3_tts_handler_kwargs),
         )
+    elif module_kwargs.tts == "lemonfox":
+        from speech_to_speech.TTS.lemonfox_tts_handler import LemonfoxTTSHandler
+
+        return LemonfoxTTSHandler(
+            stop_event,
+            queue_in=lm_response_queue,
+            queue_out=send_audio_chunks_queue,
+            setup_args=(should_listen,),
+            setup_kwargs=vars(lemonfox_tts_handler_kwargs),
+        )
     else:
-        raise ValueError("The TTS should be either chatTTS, facebookMMS, pocket, kokoro, or qwen3")
+        raise ValueError("The TTS should be either chatTTS, facebookMMS, pocket, kokoro, qwen3, or lemonfox")
 
 
 def main() -> None:
@@ -996,13 +1146,18 @@ def main() -> None:
         args.faster_whisper_stt_handler_kwargs,
         args.mlx_audio_whisper_stt_handler_kwargs,
         args.parakeet_tdt_stt_handler_kwargs,
+        args.lemonfox_stt_handler_kwargs,
+        args.openrouter_stt_handler_kwargs,
+        args.elevenlabs_realtime_stt_handler_kwargs,
         args.language_model_handler_kwargs,
         args.responses_api_language_model_handler_kwargs,
+        args.companion_runtime_language_model_handler_kwargs,
         args.chat_tts_handler_kwargs,
         args.facebook_mms_tts_handler_kwargs,
         args.pocket_tts_handler_kwargs,
         args.kokoro_tts_handler_kwargs,
         args.qwen3_tts_handler_kwargs,
+        args.lemonfox_tts_handler_kwargs,
     )
 
     # Validate after prepare_all_args(): --local_mac_optimal_settings mutates
@@ -1040,13 +1195,18 @@ def main() -> None:
         args.paraformer_stt_handler_kwargs,
         args.mlx_audio_whisper_stt_handler_kwargs,
         args.parakeet_tdt_stt_handler_kwargs,
+        args.lemonfox_stt_handler_kwargs,
+        args.openrouter_stt_handler_kwargs,
+        args.elevenlabs_realtime_stt_handler_kwargs,
         args.language_model_handler_kwargs,
         args.responses_api_language_model_handler_kwargs,
+        args.companion_runtime_language_model_handler_kwargs,
         args.chat_tts_handler_kwargs,
         args.facebook_mms_tts_handler_kwargs,
         args.pocket_tts_handler_kwargs,
         args.kokoro_tts_handler_kwargs,
         args.qwen3_tts_handler_kwargs,
+        args.lemonfox_tts_handler_kwargs,
         queues_and_events,
     )
 

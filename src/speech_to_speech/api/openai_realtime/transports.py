@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
+from asyncio import Lock, sleep
+from time import monotonic
 from typing import TYPE_CHECKING
 
 from fastapi import WebSocket, WebSocketDisconnect
@@ -23,6 +25,8 @@ if TYPE_CHECKING:
     from speech_to_speech.api.openai_realtime.service import RealtimeService, ServerEvent
 
 logger = logging.getLogger(__name__)
+PCM16_BYTES_PER_SAMPLE = 2
+PIPELINE_SAMPLE_RATE = 16_000
 
 
 class SessionTransport(ABC):
@@ -80,18 +84,29 @@ class WebSocketTransport(SessionTransport):
 
     def __init__(self, websocket: WebSocket) -> None:
         self.websocket = websocket
+        self._audio_deadline = 0.0
+        self._audio_pacing_lock = Lock()
 
     async def send_events(self, events: list[ServerEvent]) -> None:
         for event in events:
             await send_ws_event(self.websocket, event)
 
     async def send_audio_chunk(self, service: RealtimeService, session_id: str, pcm: bytes) -> None:
-        await self.send_events(service.encode_audio_chunk(session_id, pcm))
+        # WebSockets have no media clock. Pace each delta against the PCM
+        # duration so a fast TTS provider cannot flood the mobile playback queue.
+        async with self._audio_pacing_lock:
+            now = monotonic()
+            if self._audio_deadline > now:
+                await sleep(self._audio_deadline - now)
+                now = monotonic()
+            await self.send_events(service.encode_audio_chunk(session_id, pcm))
+            duration_s = len(pcm) / (PIPELINE_SAMPLE_RATE * PCM16_BYTES_PER_SAMPLE)
+            self._audio_deadline = max(now, self._audio_deadline) + duration_s
 
     def discard_pending_audio(self) -> None:
-        # Unplayed audio lives client-side over WebSocket; truncation is the
-        # client's responsibility.
-        pass
+        # The client clears already-delivered audio on speech_started. Reset our
+        # pacing clock so a replacement response can start without stale delay.
+        self._audio_deadline = 0.0
 
     async def close(self) -> None:
         try:

@@ -68,6 +68,10 @@ class Transcription(PipelineMessage):
     turn_id: str | None = None
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = None
+    average_logprob: float | None = None
+    minimum_logprob: float | None = None
+    uncertainty_reason: str | None = None
+    provider_metadata: dict[str, object] = Field(default_factory=dict, exclude=True)
 
 
 # ── LLM → LMOutputProcessor ──────────────────────────────────────────
@@ -160,6 +164,7 @@ class GenerateResponseRequest(PipelineMessage):
     turn_id: str | None = None
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = None
+    transcript_uncertainty: str | None = None
 
 
 # ── Binary sentinels (audio/output queue) ─────────────────────────────

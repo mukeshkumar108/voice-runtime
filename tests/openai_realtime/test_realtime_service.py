@@ -1249,6 +1249,25 @@ class TestDispatchPipelineEvent:
         assert evt.usage.type == "duration"
         assert service._state(conn_id).response_pending is True
 
+    def test_transcription_uncertainty_reaches_llm_request(
+        self,
+        service,
+        conn_id,
+        text_prompt_queue,
+    ):
+        service.dispatch_pipeline_event(conn_id, SpeechStartedEvent())
+        service.dispatch_pipeline_event(
+            conn_id,
+            TranscriptionCompletedEvent(
+                transcript="Tool call into YouTube.",
+                uncertainty_reason="very_low_word_logprob",
+            ),
+        )
+
+        request = text_prompt_queue.get_nowait()
+        assert isinstance(request, GenerateResponseRequest)
+        assert request.transcript_uncertainty == "very_low_word_logprob"
+
     def test_empty_transcription_completed_emits_event_without_response(
         self,
         service,
@@ -1521,6 +1540,19 @@ class TestDispatchPipelineEvent:
             ResponseFailedEvent(message="too late"),
         )
         assert events == []
+
+    def test_transcription_failed_without_active_response_is_visible(self, service, conn_id):
+        events = service.dispatch_pipeline_event(
+            conn_id,
+            ResponseFailedEvent(
+                message="Speech recognition failed. Please try again.",
+                stage="transcription",
+            ),
+        )
+
+        assert len(events) == 1
+        assert isinstance(events[0], RealtimeErrorEvent)
+        assert events[0].error.type == "transcription_failed"
 
     # -- unknown --
 

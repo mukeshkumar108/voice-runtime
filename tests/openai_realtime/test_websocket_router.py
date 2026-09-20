@@ -116,6 +116,30 @@ def _pcm_bytes(n_samples: int) -> bytes:
     return b"\x00" * (n_samples * 2)
 
 
+def test_listening_remains_disabled_during_internal_continuation(setup):
+    _, service, input_queue, output_queue, text_output_queue, should_listen, _, response_playing, cancel_scope = setup
+    unit = PipelineUnit(
+        index=0,
+        service=service,
+        cancel_scope=cancel_scope,
+        should_listen=should_listen,
+        response_playing=response_playing,
+        input_queue=input_queue,
+        output_queue=output_queue,
+        text_output_queue=text_output_queue,
+        text_prompt_queue=Queue(),
+        handlers=[],
+    )
+    conn_id = service.register()
+    state = service._state(conn_id)
+    state.in_response = True
+    should_listen.set()
+
+    enabled = router_module._sync_listening_after_response(unit, conn_id)
+
+    assert enabled is False
+    assert not should_listen.is_set()
+
 class _FakeWebSocket:
     application_state = WebSocketState.CONNECTED
 

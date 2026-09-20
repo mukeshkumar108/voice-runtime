@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
+from time import perf_counter
 from typing import TYPE_CHECKING
 
 from openai.types.realtime import (
@@ -72,6 +73,20 @@ class AudioHandler(RealtimeBaseHandler):
         one place regardless of how audio arrives.
         """
         st = self._state(conn_id)
+        received_bytes = len(pcm_bytes)
+        st.inbound_audio_append_count += 1
+        st.inbound_audio_byte_count += received_bytes
+        now_s = perf_counter()
+        if now_s - st.inbound_audio_last_log_s >= 3.0:
+            logger.info(
+                "Inbound PCM session=%s appends=%d bytes=%d latest_bytes=%d socket_audio_seconds=%.2f",
+                conn_id,
+                st.inbound_audio_append_count,
+                st.inbound_audio_byte_count,
+                received_bytes,
+                st.inbound_audio_byte_count / (PIPELINE_SAMPLE_RATE * BYTES_PER_SAMPLE),
+            )
+            st.inbound_audio_last_log_s = now_s
         pcm_bytes = resample(pcm_bytes, src_rate, PIPELINE_SAMPLE_RATE)
 
         pcm_bytes = st.audio_remainder + pcm_bytes
@@ -209,6 +224,7 @@ class AudioHandler(RealtimeBaseHandler):
             else:
                 client_out_rate = PIPELINE_SAMPLE_RATE
         audio = resample(audio, PIPELINE_SAMPLE_RATE, client_out_rate)
+        st.output_audio_sent_duration_s += len(audio) / (client_out_rate * 2)
         b64 = base64.b64encode(audio).decode("ascii")
         events.append(
             ResponseAudioDeltaEvent(

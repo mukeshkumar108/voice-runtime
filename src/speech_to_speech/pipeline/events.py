@@ -61,6 +61,10 @@ class TranscriptionCompletedEvent(PipelineEvent):
     turn_id: str | None = None
     turn_revision: int | None = None
     speech_stopped_at_s: float | None = Field(default=None, exclude=True)
+    average_logprob: float | None = Field(default=None, exclude=True)
+    minimum_logprob: float | None = Field(default=None, exclude=True)
+    uncertainty_reason: str | None = Field(default=None, exclude=True)
+    provider_metadata: dict[str, object] = Field(default_factory=dict, exclude=True)
 
 
 # ── LLM output events (LMOutputProcessor) ────────────────────────────
@@ -95,5 +99,6 @@ class ResponseFailedEvent(PipelineEvent):
 
     type: Literal["response_failed"] = "response_failed"
     message: str = ""
+    stage: Literal["response", "transcription"] = "response"
     turn_id: str | None = None
     turn_revision: int | None = None

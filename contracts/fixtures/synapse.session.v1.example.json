@@ -1,0 +1,63 @@
+{
+  "_v": "synapse.session.v1",
+  "idempotency_key": "session:sophie:user-1:session_example:final",
+  "product_id": "sophie",
+  "agent_id": "sophie",
+  "user_id": "user-1",
+  "session_id": "session_example",
+  "conversation_id": "conv_example",
+  "channel": "voice",
+  "started_at": "2026-07-24T10:00:00Z",
+  "ended_at": "2026-07-24T10:01:00Z",
+  "timezone": "Europe/London",
+  "close_reason": "disconnect",
+  "consent_scope": ["conversation_memory"],
+  "messages": [
+    {
+      "id": "turn_1",
+      "role": "user",
+      "content": "Can you hear me?",
+      "timestamp": "2026-07-24T10:00:05Z",
+      "turn_id": "turn_1",
+      "turn_revision": 0,
+      "response_id": null,
+      "channel": "voice",
+      "source": {
+        "type": "realtime_transcript",
+        "provider": "elevenlabs",
+        "language": "en",
+        "average_logprob": -0.1,
+        "minimum_logprob": -0.4,
+        "uncertainty_reason": null,
+        "provider_metadata": {}
+      }
+    },
+    {
+      "id": "resp_1",
+      "role": "assistant",
+      "content": "I'm right here.",
+      "timestamp": "2026-07-24T10:00:08Z",
+      "turn_id": "turn_1",
+      "turn_revision": 0,
+      "response_id": "resp_1",
+      "channel": "voice",
+      "source": {
+        "type": "model_response",
+        "provider": null,
+        "language": null,
+        "average_logprob": null,
+        "minimum_logprob": null,
+        "uncertainty_reason": null,
+        "provider_metadata": {}
+      }
+    }
+  ],
+  "product_state": null,
+  "metadata": {
+    "tools": [],
+    "recoveries": [],
+    "cancellations": [],
+    "providers": {},
+    "latency_summary": {}
+  }
+}

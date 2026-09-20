@@ -59,7 +59,9 @@ except ImportError:
     WEBRTC_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-MAX_AUDIO_BATCH_BYTES = 6400
+# 100 ms of 16 kHz mono PCM16. This bounds websocket pacing and interruption
+# latency while keeping event overhead modest.
+MAX_AUDIO_BATCH_BYTES = 3200
 # How long the release path waits for SESSION_END to propagate through the
 # handler chain back to output_queue before warning that the unit is stuck.
 # Tests monkeypatch this to a small value since their fixtures usually skip
@@ -230,6 +232,17 @@ def _generation_is_discardable(unit: PipelineUnit, generation: int | None) -> bo
 
 def _should_discard_audio(unit: PipelineUnit, item: Any) -> bool:
     return _generation_is_discardable(unit, _audio_generation(item))
+
+
+def _sync_listening_after_response(unit: PipelineUnit, session_id: str | None) -> bool:
+    """Enable listening only when no response or internal continuation is active."""
+    if session_id:
+        state = unit.service._state(session_id)
+        if state.in_response or state.response_pending:
+            unit.should_listen.clear()
+            return False
+    unit.should_listen.set()
+    return True
 
 
 def _safe_unregister(unit: PipelineUnit, session_id: str) -> None:
@@ -790,8 +803,12 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
                             if session_id:
                                 unit.service._state(session_id).response_pending = False
                             unit.cancel_scope.response_done(audio_generation)
-                            unit.should_listen.set()
-                            logger.info(f"Pipeline {unit.index}: stale response complete, listening re-enabled")
+                            listening_enabled = _sync_listening_after_response(unit, session_id)
+                            logger.info(
+                                "Pipeline %d: stale response complete, listening %s",
+                                unit.index,
+                                "re-enabled" if listening_enabled else "remains disabled for active response",
+                            )
                             continue
                         await _drain_pending_response_events(transport, unit, session_id)
                         if transport is not None and session_id:
@@ -800,8 +817,12 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
                             unit.service._state(session_id).response_pending = False
                         unit.response_playing.clear()
                         unit.cancel_scope.response_done(audio_generation)
-                        unit.should_listen.set()
-                        logger.info(f"Pipeline {unit.index}: response complete, listening re-enabled")
+                        listening_enabled = _sync_listening_after_response(unit, session_id)
+                        logger.info(
+                            "Pipeline %d: response complete, listening %s",
+                            unit.index,
+                            "re-enabled" if listening_enabled else "remains disabled for internal continuation",
+                        )
                         continue
 
                     # SESSION_END travels from input_queue through every handler to

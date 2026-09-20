@@ -47,18 +47,22 @@ class ResponseHandler(RealtimeBaseHandler):
 
     def _end_response(self, conn_id: str, status: _ResponseStatus = "completed") -> None:
         st = self._state(conn_id)
+        response_id = st.current_response_id
         if status == "cancelled":
             st.response_usage.responses_cancelled += 1
         else:
             st.response_usage.responses_completed += 1
         self._service.total_usage += st.response_usage
         logger.info(
-            "Response done (status=%s) — this response: input_tokens=%d, output_tokens=%d, audio=%.2fs"
+            "Response done (response_id=%s, status=%s) — this response: input_tokens=%d, output_tokens=%d, "
+            "input_audio=%.2fs, output_audio_sent=%.2fs"
             " | cumulative: input_tokens=%d, output_tokens=%d, audio=%.2fs",
+            response_id,
             status,
             st.response_usage.input_tokens,
             st.response_usage.output_tokens,
             st.response_usage.audio_duration_s,
+            st.output_audio_sent_duration_s,
             self._service.total_usage.input_tokens,
             self._service.total_usage.output_tokens,
             self._service.total_usage.audio_duration_s,
@@ -71,6 +75,7 @@ class ResponseHandler(RealtimeBaseHandler):
         st.response_pending = False
         st.current_response_params = None
         st.pending_output_text_parts = []
+        st.output_audio_sent_duration_s = 0.0
 
     def _start_item(self, conn_id: str) -> str:
         """Generate a new item ID, reset content index, and store it."""
@@ -218,6 +223,7 @@ class ResponseHandler(RealtimeBaseHandler):
         with ``response.done``.
         """
         st = self._state(conn_id)
+        response_id = st.current_response_id
         events: list[ServerEvent] = []
         if st.in_response:
             resp_id, item_id = self._ensure_response(conn_id)
@@ -251,11 +257,18 @@ class ResponseHandler(RealtimeBaseHandler):
                     response=self._build_response(conn_id, status, reason),
                 )
             )
+            if st.session_recorder is not None:
+                st.session_recorder.finish_response(
+                    response_id=response_id,
+                    status=status,
+                    reason=reason,
+                )
             self._end_response(conn_id, status)
         # Apply any client items that arrived mid-generation now that in_response
         # is cleared and the generation's own write-back has landed. Done outside
         # the in_response guard so a stray terminal call still drains the buffer.
         events.extend(self._service.conversation.flush_deferred_items(conn_id))
+        events.extend(self._service.continue_after_runtime_tools(conn_id, status))
         return events
 
     # ── Pipeline event handlers ───────────────────
@@ -318,6 +331,13 @@ class ResponseHandler(RealtimeBaseHandler):
                         response_id=resp_id,
                         delta=event.text,
                     )
+                )
+            if st.session_recorder is not None:
+                st.session_recorder.stage_assistant_text(
+                    response_id=resp_id,
+                    text=event.text,
+                    turn_id=event.turn_id,
+                    turn_revision=event.turn_revision,
                 )
             output_idx += 1
         if event.tools:
