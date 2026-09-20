@@ -9,6 +9,17 @@ load_env_file() {
   if [[ -f "$env_file" ]]; then
     echo "Loading env from ${env_file}"
     local preserved_vars=(
+      VOICE_PORT
+      VOICE_RUNTIME_URL
+      VOICE_RUNTIME_SECRET
+      VOICE_STT_BACKEND
+      VOICE_TTS_BACKEND
+      VOICE_LEMONFOX_VOICE
+      VOICE_MIN_SILENCE_MS
+      VOICE_MIN_SPEECH_MS
+      VOICE_MIN_SPEECH_CONTINUATION_MS
+      VOICE_SPECULATIVE_REOPEN_MS
+      VOICE_UNANSWERED_REOPEN_MS
       SOPHIE_VOICE_PORT
       COMPANION_RUNTIME_URL
       COMPANION_RUNTIME_SECRET
@@ -20,9 +31,6 @@ load_env_file() {
       SOPHIE_MIN_SPEECH_CONTINUATION_MS
       SOPHIE_SPECULATIVE_REOPEN_MS
       SOPHIE_UNANSWERED_REOPEN_MS
-      SOPHIE_PROMPT_MODE
-      SOPHIE_PROMPT_DEPTH
-      SOPHIE_LOG_COMPILED_PROMPT
       SYNAPSE_SESSION_RECORDING_DIR
       SYNAPSE_PRODUCT_ID
       SYNAPSE_AGENT_ID
@@ -57,21 +65,34 @@ load_env_file "$ROOT_DIR/.env"
 load_env_file "$ROOT_DIR/.env.local"
 load_env_file "$ROOT_DIR/.env.sophie"
 
-PORT="${SOPHIE_VOICE_PORT:-3002}"
-BRAIN_URL="${COMPANION_RUNTIME_URL:-http://127.0.0.1:8080}"
-BRAIN_SECRET="${COMPANION_RUNTIME_SECRET:-}"
-STT_BACKEND="${SOPHIE_STT_BACKEND:-elevenlabs-realtime}"
-TTS_BACKEND="${SOPHIE_TTS_BACKEND:-lemonfox}"
-LEMONFOX_VOICE="${SOPHIE_LEMONFOX_VOICE:-aoede}"
-MIN_SILENCE_MS="${SOPHIE_MIN_SILENCE_MS:-900}"
-MIN_SPEECH_MS="${SOPHIE_MIN_SPEECH_MS:-384}"
-MIN_SPEECH_CONTINUATION_MS="${SOPHIE_MIN_SPEECH_CONTINUATION_MS:-384}"
-SPECULATIVE_REOPEN_MS="${SOPHIE_SPECULATIVE_REOPEN_MS:-3000}"
-UNANSWERED_REOPEN_MS="${SOPHIE_UNANSWERED_REOPEN_MS:-12000}"
-PROMPT_MODE="${SOPHIE_PROMPT_MODE:-compact}"
-PROMPT_DEPTH="${SOPHIE_PROMPT_DEPTH:-auto}"
-export SOPHIE_PROMPT_MODE="$PROMPT_MODE"
-export SOPHIE_PROMPT_DEPTH="$PROMPT_DEPTH"
+# VOICE_* names are canonical. SOPHIE_*/COMPANION_* are legacy aliases kept
+# until the local .env files are migrated; a warning is printed when used.
+compat() {
+  local new_var="$1" old_var="$2" default="$3"
+  local new_val="${!new_var:-}" old_val="${!old_var:-}"
+  if [[ -n "$new_val" ]]; then
+    printf '%s' "$new_val"
+    return
+  fi
+  if [[ -n "$old_val" ]]; then
+    echo "DEPRECATED: ${old_var} is renamed to ${new_var}" >&2
+    printf '%s' "$old_val"
+    return
+  fi
+  printf '%s' "$default"
+}
+
+PORT="$(compat VOICE_PORT SOPHIE_VOICE_PORT 3002)"
+BRAIN_URL="$(compat VOICE_RUNTIME_URL COMPANION_RUNTIME_URL http://127.0.0.1:8080)"
+BRAIN_SECRET="$(compat VOICE_RUNTIME_SECRET COMPANION_RUNTIME_SECRET "")"
+STT_BACKEND="$(compat VOICE_STT_BACKEND SOPHIE_STT_BACKEND elevenlabs-realtime)"
+TTS_BACKEND="$(compat VOICE_TTS_BACKEND SOPHIE_TTS_BACKEND lemonfox)"
+LEMONFOX_VOICE="$(compat VOICE_LEMONFOX_VOICE SOPHIE_LEMONFOX_VOICE aoede)"
+MIN_SILENCE_MS="$(compat VOICE_MIN_SILENCE_MS SOPHIE_MIN_SILENCE_MS 900)"
+MIN_SPEECH_MS="$(compat VOICE_MIN_SPEECH_MS SOPHIE_MIN_SPEECH_MS 384)"
+MIN_SPEECH_CONTINUATION_MS="$(compat VOICE_MIN_SPEECH_CONTINUATION_MS SOPHIE_MIN_SPEECH_CONTINUATION_MS 384)"
+SPECULATIVE_REOPEN_MS="$(compat VOICE_SPECULATIVE_REOPEN_MS SOPHIE_SPECULATIVE_REOPEN_MS 3000)"
+UNANSWERED_REOPEN_MS="$(compat VOICE_UNANSWERED_REOPEN_MS SOPHIE_UNANSWERED_REOPEN_MS 12000)"
 export SYNAPSE_SESSION_RECORDING_DIR="${SYNAPSE_SESSION_RECORDING_DIR:-$ROOT_DIR/.synapse/sessions}"
 export SYNAPSE_PRODUCT_ID="${SYNAPSE_PRODUCT_ID:-sophie}"
 export SYNAPSE_AGENT_ID="${SYNAPSE_AGENT_ID:-sophie}"
@@ -81,7 +102,7 @@ export SYNAPSE_USER_TIMEZONE="${SYNAPSE_USER_TIMEZONE:-${SOPHIE_USER_TIMEZONE:-E
 export SYNAPSE_CONSENT_SCOPE="${SYNAPSE_CONSENT_SCOPE:-conversation_memory}"
 
 if [[ -z "$BRAIN_SECRET" ]]; then
-  echo "Missing brain key. Set COMPANION_RUNTIME_SECRET (must match the brain's secret)." >&2
+  echo "Missing brain key. Set VOICE_RUNTIME_SECRET (must match the brain's secret)." >&2
   exit 1
 fi
 
@@ -128,11 +149,10 @@ if [[ "$TTS_BACKEND" == "lemonfox" ]]; then
   CMD+=(--lemonfox_tts_response_format pcm)
 fi
 
-echo "Starting Sophie voice runtime on ws://0.0.0.0:${PORT}/v1/realtime"
+echo "Starting voice runtime on ws://0.0.0.0:${PORT}/v1/realtime"
 echo "Brain: ${BRAIN_URL} (companion-runtime stream)"
 echo "STT backend: ${STT_BACKEND}"
 echo "TTS backend: ${TTS_BACKEND}"
-echo "Prompt compiler: ${PROMPT_MODE} (${PROMPT_DEPTH})"
 echo "Session recording: ${SYNAPSE_SESSION_RECORDING_DIR}"
 echo "VAD min_silence_ms: ${MIN_SILENCE_MS}"
 echo "VAD min_speech_ms: ${MIN_SPEECH_MS}"

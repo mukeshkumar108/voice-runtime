@@ -38,26 +38,25 @@ The helper script:
 - binds to `0.0.0.0:3002`
 - uses ElevenLabs Scribe realtime STT by default
 - uses Lemonfox TTS with the `aoede` voice by default
-- uses Gemma through OpenRouter as the primary LLM
-- uses Qwen 3.5 Flash as the configured fallback LLM
+- delegates every turn to companion-runtime (`VOICE_RUNTIME_URL`, default `http://127.0.0.1:8080`), which owns prompt, memory, tools, and model selection
 - supports local Parakeet STT and Qwen3 TTS as optional alternatives
+
+Env names are `VOICE_*`. Legacy `SOPHIE_*` / `COMPANION_*` aliases still work with a deprecation warning.
 
 Useful overrides:
 
 ```bash
-export SOPHIE_VOICE_PORT=3002
-export SOPHIE_STT_BACKEND=elevenlabs-realtime
-export SOPHIE_TTS_BACKEND=lemonfox
-export SOPHIE_LEMONFOX_VOICE=aoede
-export SOPHIE_MIN_SILENCE_MS=900
-export SOPHIE_MIN_SPEECH_MS=384
-export SOPHIE_MIN_SPEECH_CONTINUATION_MS=384
-export SOPHIE_SPECULATIVE_REOPEN_MS=3000
-export SOPHIE_UNANSWERED_REOPEN_MS=12000
-export SOPHIE_LLM_MODEL="google/gemma-4-26b-a4b-it"
-export SOPHIE_LLM_FALLBACK_MODEL="qwen/qwen3.5-flash-02-23"
-export SOPHIE_LLM_BASE_URL="https://openrouter.ai/api/v1"
-export SOPHIE_LLM_API_KEY="..."
+export VOICE_PORT=3002
+export VOICE_STT_BACKEND=elevenlabs-realtime
+export VOICE_TTS_BACKEND=lemonfox
+export VOICE_LEMONFOX_VOICE=aoede
+export VOICE_MIN_SILENCE_MS=900
+export VOICE_MIN_SPEECH_MS=384
+export VOICE_MIN_SPEECH_CONTINUATION_MS=384
+export VOICE_SPECULATIVE_REOPEN_MS=3000
+export VOICE_UNANSWERED_REOPEN_MS=12000
+export VOICE_RUNTIME_URL="http://127.0.0.1:8080"
+export VOICE_RUNTIME_SECRET="..."
 export LEMONFOX_API_KEY="..."
 export ELEVENLABS_API_KEY="..."
 ./scripts/run_sophie_realtime.sh
@@ -66,27 +65,27 @@ export ELEVENLABS_API_KEY="..."
 Lemonfox experiment:
 
 ```bash
-export SOPHIE_STT_BACKEND=lemonfox
-export SOPHIE_TTS_BACKEND=lemonfox
-export SOPHIE_LEMONFOX_VOICE=aoede
+export VOICE_STT_BACKEND=lemonfox
+export VOICE_TTS_BACKEND=lemonfox
+export VOICE_LEMONFOX_VOICE=aoede
 ./scripts/run_sophie_realtime.sh
 ```
 
 OpenRouter Parakeet + Lemonfox TTS:
 
 ```bash
-export SOPHIE_STT_BACKEND=openrouter-parakeet
-export SOPHIE_TTS_BACKEND=lemonfox
-export SOPHIE_LEMONFOX_VOICE=aoede
+export VOICE_STT_BACKEND=openrouter-parakeet
+export VOICE_TTS_BACKEND=lemonfox
+export VOICE_LEMONFOX_VOICE=aoede
 ./scripts/run_sophie_realtime.sh
 ```
 
 ElevenLabs realtime STT + Lemonfox TTS:
 
 ```bash
-export SOPHIE_STT_BACKEND=elevenlabs-realtime
-export SOPHIE_TTS_BACKEND=lemonfox
-export SOPHIE_LEMONFOX_VOICE=aoede
+export VOICE_STT_BACKEND=elevenlabs-realtime
+export VOICE_TTS_BACKEND=lemonfox
+export VOICE_LEMONFOX_VOICE=aoede
 ./scripts/run_sophie_realtime.sh
 ```
 
@@ -151,7 +150,7 @@ sophie-mob mic
 -> HF VAD
 -> HF STT
 -> HF/OpenAI-Realtime protocol
--> OpenAI-compatible LLM provider
+-> companion-runtime brain (prompt, memory, tools, model)
 -> HF TTS
 -> sophie-mob playback
 ```

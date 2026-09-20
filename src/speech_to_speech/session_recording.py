@@ -180,9 +180,9 @@ class SessionRecorder:
             providers={
                 key: value
                 for key, value in {
-                    "stt": os.environ.get("SOPHIE_STT_BACKEND"),
+                    "stt": os.environ.get("VOICE_STT_BACKEND", os.environ.get("SOPHIE_STT_BACKEND")),
                     "llm": os.environ.get("SOPHIE_LLM_MODEL"),
-                    "tts": os.environ.get("SOPHIE_TTS_BACKEND"),
+                    "tts": os.environ.get("VOICE_TTS_BACKEND", os.environ.get("SOPHIE_TTS_BACKEND")),
                 }.items()
                 if value
             },

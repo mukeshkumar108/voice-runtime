@@ -14,6 +14,12 @@ from speech_to_speech.api.openai_realtime.runtime_config import RuntimeConfig
 
 logger = logging.getLogger(__name__)
 
+# NOTE: legacy path. SophiePromptCompiler serves the direct-LLM backends
+# (responses-api / chat-completions diagnostic hatch). The companion-runtime
+# backend bypasses it entirely (see its no-op _apply_config): the brain
+# compiles the prompt server-side. Only add_transcript_uncertainty_overlay
+# is still shared, and the brain now receives that signal structured instead.
+
 DEFAULT_CLIENT_SESSION_INSTRUCTIONS = (
     "You are Sophie, a warm, concise voice companion. Respond conversationally and naturally for spoken dialogue."
 )

@@ -1,7 +1,9 @@
 """Small runtime-owned tool registry.
 
-These tools execute inside the Sophie runtime. Device clients may provide
-context such as timezone, but they do not declare, execute, or continue tools.
+These tools execute inside the voice runtime for the legacy direct-LLM
+backends (responses-api / chat-completions diagnostic hatch). The
+companion-runtime backend never forwards client tools: the brain executes
+its own tools server-side.
 """
 
 from __future__ import annotations
