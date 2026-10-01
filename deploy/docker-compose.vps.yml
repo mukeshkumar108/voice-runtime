@@ -1,0 +1,36 @@
+# VPS deployment (CPU: STT/TTS are cloud providers, no GPU reservation).
+#   cp deploy/.env.example deploy/.env && chmod 600 deploy/.env
+#   docker compose -f deploy/docker-compose.vps.yml --env-file deploy/.env up -d --build
+name: voice-runtime
+
+services:
+  voice-runtime:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    image: voice-runtime:local
+    container_name: voice-runtime
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      VOICE_PORT: "3002"
+      PYTHONUNBUFFERED: "1"
+    expose:
+      - "3002"
+    networks:
+      - proxy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:3002/healthz', timeout=3).read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 180s
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  proxy:
+    external: true
+    name: stack_backend
