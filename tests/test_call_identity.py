@@ -138,3 +138,12 @@ async def test_context_is_loaded_from_the_product_host(monkeypatch):
     identity = await call_identity.load_call_context(call_identity.verify_token(_token()), "tok")
     assert identity.history[0]["created_at"] == "2026-10-01T09:00:00Z"
     assert identity.session_routing == {"residentWorld": {"x": 1}}
+
+
+def test_binding_a_connection_to_a_chat_uses_the_services_own_state():
+    from speech_to_speech.api.openai_realtime.service import RealtimeService
+
+    service = RealtimeService(runtime_tools=False)
+    connection = service.register()
+    service.bind_conversation(connection, "11111111-1111-4111-8111-111111111111")
+    assert service._state(connection).conversation_id == "11111111-1111-4111-8111-111111111111"

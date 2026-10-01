@@ -495,7 +495,7 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
                 # The call joins the product's existing chat: same conversation
                 # id, history and Runtime state as text.
                 identity = await call_identity.load_call_context(claims, token)
-                unit.session.conversation_id = identity.conversation_id
+                unit.service.bind_conversation(session_id, identity.conversation_id)
                 call_identity.REGISTRY.bind(identity)
                 bound_conversation_id = identity.conversation_id
 

@@ -291,6 +291,11 @@ class RealtimeService:
                 self.total_usage.audio_duration_s,
             )
 
+    def bind_conversation(self, conn_id: str, conversation_id: str) -> None:
+        """Join this connection to an existing product conversation (a call is a
+        modality of the user's chat, not a conversation of its own)."""
+        self._state(conn_id).conversation_id = conversation_id
+
     def _state(self, conn_id: str) -> ConnState:
         return self._conns[conn_id]
 
