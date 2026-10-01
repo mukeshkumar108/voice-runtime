@@ -28,6 +28,7 @@ from openai.types.realtime.realtime_conversation_item_assistant_message import (
     Content as AssistantContent,
 )
 
+from speech_to_speech import call_identity
 from speech_to_speech.LLM.base_openai_compatible_language_model import (
     AssistantMessage,
     BaseOpenAICompatibleHandler,
@@ -113,6 +114,7 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
         # pipeline thread and consumed by _serialize/_iter_* for that turn.
         self._req_conversation_id: str = self.conversation_id
         self._req_reliability: dict[str, Any] | None = None
+        self._req_user_text: str = ""
         self._pending_brain_turn: tuple[str, str] | None = None
         self._last_brain_error_code: str | None = None
         self._turn_started_at: float = 0.0
@@ -206,12 +208,37 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
         ]
         return history, latest_user
 
+    def _call_identity(self) -> "call_identity.CallIdentity | None":
+        return call_identity.REGISTRY.get(self._req_conversation_id)
+
     def _serialize(self, active_chat: Chat) -> dict[str, Any]:
         history, latest_user = self._history_from_chat(active_chat)
         turn_id = f"voice_{uuid.uuid4().hex[:12]}"
         conversation_id = self._req_conversation_id
+        identity = self._call_identity()
+        self._req_user_text = latest_user
         self._pending_brain_turn = (turn_id, conversation_id)
         self._request_sent_at = monotonic()
+        user_id, timezone, companion_id = self.user_id, self.timezone, self.companion_id
+        trusted: dict[str, Any] = {"user_id": user_id, "timezone": timezone}
+        if identity is not None:
+            # The chat's own history precedes this call's spoken turns; the
+            # previous Runtime state is carried verbatim so Cortex is not
+            # rehydrated on every spoken turn.
+            history = (identity.history + history)[-40:]
+            user_id, timezone, companion_id = identity.user_id, identity.timezone, identity.companion_id
+            trusted = {
+                "user_id": user_id,
+                "timezone": timezone,
+                "session_routing": identity.session_routing,
+                "entry_context": {"chronology": {
+                    # A call is its own sitting: new on its first turn, same after.
+                    "temporalSession": "new" if identity.turns_sent == 0 else "same",
+                    "sessionStartedAt": identity.started_at_iso,
+                    "firstContactToday": False,
+                }},
+                "medium": "voice",
+            }
         logger.info(
             "Brain turn start turn=%s conv=%s history=%d reliability=%s",
             turn_id,
@@ -223,12 +250,12 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
             "contract_version": "v1",
             "turn_id": turn_id,
             "conversation_id": conversation_id,
-            "companion_id": self.companion_id,
+            "companion_id": companion_id,
             "selected_model_id": self.selected_model_id,
             "current_sanitized_message": latest_user,
             "message_parts": [{"type": "text", "text": latest_user}] if latest_user.strip() else [],
             "canonical_history": history,
-            "trusted_user_context": {"user_id": self.user_id, "timezone": self.timezone},
+            "trusted_user_context": trusted,
             "transcript_reliability": self._req_reliability,
             "medium": "voice",
         }
@@ -331,6 +358,7 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
                     if text:
                         yield AssistantMessage(content=[AssistantContent(type="output_text", text=text)])
                     metadata = result.get("execution_metadata", {}) or {}
+                    self._carry_runtime_state(text, metadata)
                     input_tokens = int(metadata.get("input_tokens", 0) or 0)
                     output_tokens = int(metadata.get("output_tokens", 0) or 0)
                     if input_tokens or output_tokens:
@@ -354,6 +382,26 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
             except Exception:
                 pass
 
+    def _carry_runtime_state(self, assistant_text: str, metadata: dict[str, Any]) -> None:
+        """Keep the Runtime's opaque next_session_state for the next spoken turn
+        and hand the completed turn back to the product as ordinary history."""
+        identity = self._call_identity()
+        if identity is None:
+            return
+        state = metadata.get("next_session_state")
+        if isinstance(state, dict):
+            identity.session_routing = state
+        identity.turns_sent += 1
+        turn = self._pending_brain_turn
+        call_identity.report_completed_turn(
+            identity,
+            turn_id=turn[0] if turn else f"voice_{uuid.uuid4().hex[:12]}",
+            user_text=self._req_user_text,
+            assistant_text=assistant_text,
+            next_session_state=state if isinstance(state, dict) else None,
+            reliability_status=str((self._req_reliability or {}).get("status", "reliable")),
+        )
+
     def _iter_response_events(self, payload: dict[str, Any]) -> Iterator[ProviderEvent]:
         if payload.get("status") in ("failed", "cancelled") or "error_code" in payload:
             code = str(payload.get("error_code", "unknown"))
@@ -361,5 +409,6 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
             raise RuntimeError(f"companion-runtime turn failed ({code}): {payload.get('message', '')}")
         text = (payload.get("assistant_message") or "").strip()
         if text:
+            self._carry_runtime_state(text, payload.get("execution_metadata", {}) or {})
             yield TextDelta(text=text)
             yield AssistantMessage(content=[AssistantContent(type="output_text", text=text)])

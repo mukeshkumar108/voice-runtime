@@ -14,12 +14,32 @@ adapter, not a second companion implementation.
 | `companion_id` | Which companion profile the brain should speak as. Voice passes it through; it never interprets it. |
 | `current_sanitized_message` + `message_parts` | The final STT transcript for this turn. |
 | `canonical_history` | Bounded prior user/assistant turns from this connection's chat. Voice history resets per connection. |
-| `trusted_user_context` | `{user_id, timezone}`. Provisional until Core issues session identity. |
+| `trusted_user_context` | Unbound dev mode: `{user_id, timezone}`. Bound call: `{user_id, timezone, medium, session_routing, entry_context}`. See "Call identity". |
 | `transcript_reliability` | `{source: voice_stream, status: reliable\|uncertain, confidence, reason?}` from STT signals. |
 | `medium` | Always `"voice"`. Modality metadata, not authority: the brain decides what it means. |
 
 Future modality signals ride in the same envelope (`device`, interruption
 flags) without changing this shape. Voice reports; the brain interprets.
+
+## Call identity (product-issued)
+
+When `VOICE_SESSION_SECRET` is set the WebSocket requires `?token=` issued by the
+product host (HMAC-SHA256 over `{uid, cid, tz, companion, exp}`); anonymous
+connections are refused. A bound call is a *modality of an existing chat*:
+
+- `conversation_id` is the product's chat id (not a per-connection id).
+- On connect, voice reads `GET {VOICE_HOST_URL}/api/voice/context` (bearer =
+  the token): the chat's recent history and the previous Runtime
+  `next_session_state`.
+- Each turn sends that state back as `trusted_user_context.session_routing`
+  and replaces it with the `next_session_state` from the `completed` event, so
+  the Runtime hydrates Cortex once (first turn of the call) and not again.
+  Voice never reads or edits the state.
+- `entry_context.chronology`: the call is its own sitting (`new` on its first
+  turn, `same` afterwards).
+- After each completed turn, voice posts `{turn_id, user_text, assistant_text,
+  next_session_state}` to `{VOICE_HOST_URL}/api/voice/turn` (best effort), so
+  spoken turns become ordinary chat history, mirrored exactly like text.
 
 ## Downward (brain -> voice): streamed text + terminal state
 

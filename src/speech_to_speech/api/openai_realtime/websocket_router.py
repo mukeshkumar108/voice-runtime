@@ -19,6 +19,7 @@ from openai.types.realtime import (
     SessionUpdateEvent,
 )
 
+from speech_to_speech import call_identity
 from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit, SessionState
 from speech_to_speech.api.openai_realtime.service import (
     PIPELINE_SAMPLE_RATE,
@@ -455,6 +456,13 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
 
     @app.websocket("/v1/realtime")
     async def realtime_endpoint(ws: WebSocket) -> None:
+        # When a session secret is configured the product host must have issued
+        # this call's identity; anonymous connections are refused.
+        token = ws.query_params.get("token")
+        claims = call_identity.verify_token(token) if call_identity.secret_configured() else None
+        if call_identity.secret_configured() and claims is None:
+            await ws.close(code=1008, reason="unauthorized")
+            return
         await ws.accept()
 
         transport = WebSocketTransport(ws)
@@ -478,10 +486,18 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
         # Everything after the claim runs inside try so the finally below always
         # releases the unit, even if session setup fails.
         session_id = ""
+        bound_conversation_id: str | None = None
         try:
             session_id = unit.service.register()
             unit.session.session_id = session_id
             logger.info(f"Client connected to pipeline {unit.index} (session {session_id})")
+            if claims is not None and token is not None:
+                # The call joins the product's existing chat: same conversation
+                # id, history and Runtime state as text.
+                identity = await call_identity.load_call_context(claims, token)
+                unit.session.conversation_id = identity.conversation_id
+                call_identity.REGISTRY.bind(identity)
+                bound_conversation_id = identity.conversation_id
 
             # Defensive: drain edge queues and reset events so stale data from a
             # previous session that survived SESSION_END propagation doesn't leak.
@@ -510,6 +526,7 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
             # this finally returns immediately. Awaiting here is unreliable: after
             # WebSocketDisconnect propagates, subsequent awaits in the same task
             # can be skipped/cancelled by Starlette's runner and never resume.
+            call_identity.REGISTRY.release(bound_conversation_id)
             _release_session(unit, session_id)
 
     @app.get("/healthz")
