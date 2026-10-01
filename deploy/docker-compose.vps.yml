@@ -7,7 +7,7 @@ services:
   voice-runtime:
     build:
       context: ..
-      dockerfile: Dockerfile
+      dockerfile: Dockerfile.hosted
     image: voice-runtime:local
     container_name: voice-runtime
     restart: unless-stopped

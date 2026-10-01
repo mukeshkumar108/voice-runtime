@@ -1,0 +1,18 @@
+# Hosted-speech runtime (ElevenLabs realtime STT + Lemonfox TTS + Companion Runtime
+# brain). The only local model is Silero VAD, which needs CPU torch (installed
+# separately from the PyTorch CPU index in Dockerfile.hosted). No CUDA, no
+# local STT/TTS/LLM stacks (nano-parakeet, faster-qwen3-tts, mlx, ...).
+fastapi>=0.115.0
+httpx>=0.28.0
+nltk==3.9.4
+numpy>=1.26.0
+openai==2.28.0
+pillow>=10.0.0
+pydantic>=2.0
+requests
+rich>=13.0
+scipy>=1.10.0
+# s2s_pipeline.py uses transformers.HfArgumentParser for CLI parsing only.
+transformers>=4.57.0
+uvicorn>=0.30.0
+websockets>=12.0

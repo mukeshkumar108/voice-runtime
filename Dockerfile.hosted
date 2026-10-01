@@ -1,0 +1,36 @@
+# Hosted-speech Voice Runtime image (CPU only). Production uses ElevenLabs
+# realtime STT and Lemonfox TTS; the brain is Companion Runtime. The only local
+# model is Silero VAD (CPU torch), baked in at build so startup needs no GitHub.
+# syntax=docker/dockerfile:1.7
+FROM python:3.12-slim-bookworm AS builder
+ENV PIP_NO_CACHE_DIR=1 UV_NO_CACHE=1 PYTHONDONTWRITEBYTECODE=1
+RUN pip install uv && uv venv /opt/venv
+ENV VIRTUAL_ENV=/opt/venv PATH="/opt/venv/bin:${PATH}"
+# CPU torch first (small), then the pinned hosted dependency set.
+RUN uv pip install torch --index-url https://download.pytorch.org/whl/cpu
+COPY requirements-hosted.txt ./
+RUN uv pip install -r requirements-hosted.txt
+COPY pyproject.toml README.md LICENSE MANIFEST.in ./
+COPY src ./src
+RUN uv pip install --no-deps .
+ENV NLTK_DATA=/opt/nltk_data TORCH_HOME=/opt/torch
+RUN python -c "import nltk; nltk.download('punkt_tab', download_dir='/opt/nltk_data'); nltk.download('averaged_perceptron_tagger_eng', download_dir='/opt/nltk_data')" \
+ && python -c "import torch; torch.hub.load('snakers4/silero-vad','silero_vad',trust_repo=True,skip_validation=True)" \
+ && find /opt/venv -name '__pycache__' -type d -prune -exec rm -rf {} + \
+ && rm -rf /opt/torch/hub/master.zip
+
+FROM python:3.12-slim-bookworm
+ENV PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1 \
+    VIRTUAL_ENV=/opt/venv PATH="/opt/venv/bin:${PATH}" \
+    NLTK_DATA=/opt/nltk_data TORCH_HOME=/opt/torch \
+    VOICE_PORT=3002
+WORKDIR /usr/src/app
+COPY --from=builder /opt/venv /opt/venv
+COPY --from=builder /opt/nltk_data /opt/nltk_data
+COPY --from=builder /opt/torch /opt/torch
+COPY docker/entrypoint.sh /usr/local/bin/voice-entrypoint.sh
+RUN chmod +x /usr/local/bin/voice-entrypoint.sh
+EXPOSE 3002
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:' + __import__('os').environ.get('VOICE_PORT', '3002') + '/healthz')"
+ENTRYPOINT ["/usr/local/bin/voice-entrypoint.sh"]
