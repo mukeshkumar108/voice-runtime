@@ -217,6 +217,15 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
         conversation_id = self._req_conversation_id
         identity = self._call_identity()
         self._req_user_text = latest_user
+        # This call's own transcript (before the product chat's earlier history
+        # is prepended), kept to hand to the brain when the call ends.
+        self._episode = {
+            "conversation_id": conversation_id,
+            "user_id": identity.user_id if identity is not None else self.user_id,
+            "companion_id": identity.companion_id if identity is not None else self.companion_id,
+            "messages": [*history, *([{"id": f"hist_{len(history)}", "role": "user", "content": latest_user}]
+                                     if latest_user.strip() else [])],
+        }
         self._pending_brain_turn = (turn_id, conversation_id)
         self._request_sent_at = monotonic()
         user_id, timezone, companion_id = self.user_id, self.timezone, self.companion_id
@@ -263,6 +272,34 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
     def _build_optional_kwargs(self, req_tools: Any, req_tool_choice: Any) -> dict[str, Any]:
         # Tools execute inside the brain. Voice never forwards client tools.
         return {}
+
+    # ── episode end ───────────────────────────────────────────────────────
+    # A call never has a "next turn" in its own conversation, so the brain's
+    # sitting-boundary consolidation can't fire for it. Voice owns the
+    # connection lifecycle and the transcript, so it tells the brain when the
+    # conversation is over; the brain decides what that means (consolidation).
+
+    def _note_assistant(self, text: str) -> None:
+        episode = getattr(self, "_episode", None)
+        if episode is not None:
+            episode["messages"].append(
+                {"id": f"hist_{len(episode['messages'])}", "role": "assistant", "content": text})
+
+    def on_session_end(self) -> None:
+        episode, self._episode = getattr(self, "_episode", None), None
+        if not episode or len(episode["messages"]) < 2:
+            return
+        try:
+            response = self.client.post(
+                f"{self.base_url}/v1/conversations/{episode['conversation_id']}/end",
+                json={"user_id": episode["user_id"], "companion_id": episode["companion_id"],
+                      "canonical_history": episode["messages"], "reason": "voice_session_end"},
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            logger.info("Episode end sent conv=%s messages=%d", episode["conversation_id"], len(episode["messages"]))
+        except Exception as exc:  # never affects the call; consolidation is best-effort
+            logger.warning("Episode end failed conv=%s: %s", episode["conversation_id"], exc)
 
     # ── brain cancellation (barge-in) ─────────────────────────────────────
 
@@ -385,6 +422,7 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
     def _carry_runtime_state(self, assistant_text: str, metadata: dict[str, Any]) -> None:
         """Keep the Runtime's opaque next_session_state for the next spoken turn
         and hand the completed turn back to the product as ordinary history."""
+        self._note_assistant(assistant_text)
         identity = self._call_identity()
         if identity is None:
             return

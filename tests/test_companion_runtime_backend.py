@@ -270,3 +270,53 @@ def test_failed_cancel_is_swallowed():
 
     handler = _handler(client=_Boom())
     handler._cancel_brain_turn("voice_x", "conv_y")  # must not raise
+
+
+def test_session_end_hands_the_calls_own_transcript_to_the_brain_under_the_bound_identity():
+    import json as _json
+    from speech_to_speech import call_identity
+
+    seen = {}
+
+    def handler_fn(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["json"] = _json.loads(request.content)
+        return httpx.Response(202, json={"status": "scheduled"})
+
+    identity = call_identity.CallIdentity(
+        user_id="user-1", conversation_id="call-1", timezone="Europe/London", companion_id="sophie",
+        token="t", started_at_iso="2026-10-02T08:08:00+00:00",
+        history=[{"id": "old", "role": "user", "content": "yesterday's text chat"}])
+    call_identity.REGISTRY.bind(identity)
+    try:
+        handler = _handler(client=httpx.Client(transport=httpx.MockTransport(handler_fn)))
+        handler._req_conversation_id = "call-1"
+        chat = Chat(10)
+        chat.add_item(make_user_message("I'm going into Cambridge for lunch"))
+        payload = handler._serialize(chat)
+        assert payload["canonical_history"][0]["content"] == "yesterday's text chat"   # unchanged turn contract
+        handler._note_assistant("Nice, what time?")
+        call_identity.REGISTRY.release("call-1")      # the websocket releases the identity before SESSION_END
+        handler.on_session_end()
+    finally:
+        call_identity.REGISTRY.release("call-1")
+    assert seen["url"].endswith("/v1/conversations/call-1/end")
+    assert seen["json"]["user_id"] == "user-1"
+    assert [(m["role"], m["content"]) for m in seen["json"]["canonical_history"]] == [
+        ("user", "I'm going into Cambridge for lunch"), ("assistant", "Nice, what time?")]   # this call only
+    seen.clear()
+    handler.on_session_end()
+    assert seen == {}
+
+
+def test_session_end_failure_never_raises_and_empty_session_is_silent():
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    handler = _handler(client=httpx.Client(transport=httpx.MockTransport(boom)))
+    handler.on_session_end()          # no episode at all
+    chat = Chat(10)
+    chat.add_item(make_user_message("hello"))
+    handler._serialize(chat)
+    handler._note_assistant("hi")
+    handler.on_session_end()          # runtime down: swallowed
