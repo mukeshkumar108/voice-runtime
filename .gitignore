@@ -230,3 +230,4 @@ dmypy.json
 cover/
 .tox/
 uv.lock
+.DS_Store
