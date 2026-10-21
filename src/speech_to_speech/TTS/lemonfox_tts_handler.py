@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 from math import gcd
-from threading import Event
+from threading import Event, Thread
 from time import perf_counter
 from typing import Any, Iterator, Optional
 
@@ -22,6 +23,15 @@ from speech_to_speech.pipeline.speculative_turns import SpeculativeTurnTracker
 
 logger = logging.getLogger(__name__)
 console = Console()
+
+# Longest silence tolerated *inside* a synthesis stream. The provider sometimes sends a few bytes and then
+# hangs; without a short bound the single TTS thread sat blocked for up to a minute and every later reply
+# queued behind it.
+READ_TIMEOUT_ENV = "VOICE_TTS_READ_TIMEOUT_S"
+DEFAULT_READ_TIMEOUT_S = 8.0
+# A sentence that produced no audio at all before stalling is requested once more.
+EMPTY_STREAM_RETRIES = 1
+CANCEL_POLL_S = 0.1
 SUPPORTED_LEMONFOX_VOICES = {
     "heart",
     "bella",
@@ -135,33 +145,71 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
         first_audio_at: float | None = None
         source_buffer = bytearray()
         produced_samples = 0
+        attempts = 0
 
-        with self.client.stream("POST", f"{self.base_url}/audio/speech", json=payload) as response:
-            response.raise_for_status()
-            for raw_chunk in response.iter_bytes():
-                if generation is not None and self.cancel_scope is not None and self.cancel_scope.is_stale(generation):
+        while True:
+            attempts += 1
+            stalled = False
+            watcher_done = Event()
+            try:
+                with self.client.stream(
+                    "POST", f"{self.base_url}/audio/speech", json=payload, timeout=self._request_timeout()
+                ) as response:
+                    response.raise_for_status()
+                    # Closing the response is the only way to unblock a read that is waiting on the
+                    # provider, so an interruption watches for itself instead of waiting for the next byte.
+                    Thread(
+                        target=self._close_on_cancel,
+                        args=(response, generation, watcher_done),
+                        name="lemonfox-cancel-watch",
+                        daemon=True,
+                    ).start()
+                    try:
+                        for raw_chunk in response.iter_bytes():
+                            if self._is_cancelled(generation):
+                                logger.info("Lemonfox TTS generation cancelled (interruption)")
+                                return
+                            if not raw_chunk:
+                                continue
+                            if first_audio_at is None:
+                                first_audio_at = perf_counter()
+                                logger.info(
+                                    "Lemonfox TTS TTFA: %.2fs (%s)",
+                                    first_audio_at - request_started_at,
+                                    voice,
+                                )
+                                if tts_input.speech_stopped_at_s is not None:
+                                    logger.info(
+                                        "Last speech detected to first speech out: %.3fs (turn=%s rev=%s)",
+                                        first_audio_at - tts_input.speech_stopped_at_s,
+                                        tts_input.turn_id,
+                                        tts_input.turn_revision,
+                                    )
+                            source_buffer.extend(raw_chunk)
+                            for audio_block in self._drain_source_buffer(source_buffer):
+                                produced_samples += len(audio_block)
+                                yield audio_block
+                    finally:
+                        watcher_done.set()
+            except (httpx.TransportError, httpx.StreamError, OSError) as exc:
+                if self._is_cancelled(generation):
                     logger.info("Lemonfox TTS generation cancelled (interruption)")
                     return
-                if not raw_chunk:
-                    continue
-                if first_audio_at is None:
-                    first_audio_at = perf_counter()
-                    logger.info(
-                        "Lemonfox TTS TTFA: %.2fs (%s)",
-                        first_audio_at - request_started_at,
-                        voice,
-                    )
-                    if tts_input.speech_stopped_at_s is not None:
-                        logger.info(
-                            "Last speech detected to first speech out: %.3fs (turn=%s rev=%s)",
-                            first_audio_at - tts_input.speech_stopped_at_s,
-                            tts_input.turn_id,
-                            tts_input.turn_revision,
-                        )
-                source_buffer.extend(raw_chunk)
-                for audio_block in self._drain_source_buffer(source_buffer):
-                    produced_samples += len(audio_block)
-                    yield audio_block
+                stalled = True
+                logger.warning(
+                    "Lemonfox TTS stream failed after %.1fs, %d sample(s) so far (attempt %d, turn=%s): %s: %s",
+                    perf_counter() - request_started_at,
+                    produced_samples,
+                    attempts,
+                    tts_input.turn_id,
+                    type(exc).__name__,
+                    exc,
+                )
+            if self._is_cancelled(generation):
+                return
+            if stalled and produced_samples == 0 and not source_buffer and attempts <= EMPTY_STREAM_RETRIES:
+                continue
+            break
 
         if source_buffer:
             audio_block = self._pcm24k_bytes_to_block(np.frombuffer(bytes(source_buffer), dtype=np.int16))
@@ -181,6 +229,34 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
 
     def cleanup(self) -> None:
         self.client.close()
+
+    def _request_timeout(self) -> httpx.Timeout:
+        try:
+            read_s = float(os.getenv(READ_TIMEOUT_ENV, DEFAULT_READ_TIMEOUT_S))
+        except ValueError:
+            read_s = DEFAULT_READ_TIMEOUT_S
+        return httpx.Timeout(self.timeout_s, connect=10.0, read=max(0.5, read_s))
+
+    def _is_cancelled(self, generation: int | None) -> bool:
+        return generation is not None and self.cancel_scope is not None and self.cancel_scope.is_stale(generation)
+
+    def _close_on_cancel(self, response: httpx.Response, generation: int | None, done: Event) -> None:
+        while not done.wait(CANCEL_POLL_S):
+            if self._is_cancelled(generation):
+                # Closing a response does not wake a read already blocked in another thread; shutting
+                # the socket down does, and the blocked read then raises into the cancel path above.
+                try:
+                    network_stream = response.extensions.get("network_stream")
+                    sock = network_stream.get_extra_info("socket") if network_stream is not None else None
+                    if sock is not None:
+                        sock.shutdown(socket.SHUT_RDWR)
+                except Exception:
+                    pass
+                try:
+                    response.close()
+                except Exception:  # the read side may already be gone
+                    pass
+                return
 
     def _drain_source_buffer(self, source_buffer: bytearray) -> Iterator[np.ndarray]:
         source_bytes_per_block = self.blocksize * 2 * self._resample_down // self._resample_up
