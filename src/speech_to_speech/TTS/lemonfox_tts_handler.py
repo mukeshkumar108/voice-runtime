@@ -28,9 +28,10 @@ console = Console()
 # hangs; without a short bound the single TTS thread sat blocked for up to a minute and every later reply
 # queued behind it.
 READ_TIMEOUT_ENV = "VOICE_TTS_READ_TIMEOUT_S"
-DEFAULT_READ_TIMEOUT_S = 8.0
-# A sentence that produced no audio at all before stalling is requested once more.
-EMPTY_STREAM_RETRIES = 1
+DEFAULT_READ_TIMEOUT_S = 4.0
+# A sentence that produced no audio at all before stalling is requested again (a slow first byte is usually
+# the provider being briefly overloaded, and the next request is normally quick).
+EMPTY_STREAM_RETRIES = 2
 CANCEL_POLL_S = 0.1
 SUPPORTED_LEMONFOX_VOICES = {
     "heart",

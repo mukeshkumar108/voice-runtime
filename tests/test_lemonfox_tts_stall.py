@@ -109,12 +109,12 @@ def test_midstream_stall_is_bounded_and_keeps_the_audio_it_had():
         provider.close()
 
 
-def test_a_sentence_that_never_starts_is_retried_once():
-    provider = _Provider(["stall_immediately", "ok"])
+def test_a_sentence_that_never_starts_is_retried():
+    provider = _Provider(["stall_immediately", "stall_immediately", "ok"])
     try:
         scope = CancelScope()
         blocks, elapsed = _run(_handler(provider.url, scope), scope)
-        assert blocks and provider.requests == 2 and elapsed < 6
+        assert blocks and provider.requests == 3 and elapsed < 8
     finally:
         provider.close()
 
