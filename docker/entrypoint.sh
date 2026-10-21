@@ -43,7 +43,8 @@ CMD=(
   --enable_live_transcription
 )
 
-if [[ "$STT_BACKEND" == "lemonfox" ]]; then
+# Batch recognisers transcribe each finished turn; live partial transcription would re-send audio mid-speech.
+if [[ "$STT_BACKEND" != "elevenlabs-realtime" ]]; then
   CMD+=(--enable_live_transcription false)
 fi
 if [[ -n "${LEMONFOX_API_KEY:-}" ]]; then
