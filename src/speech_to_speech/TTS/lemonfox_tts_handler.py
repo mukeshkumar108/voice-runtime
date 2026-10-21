@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import os
 import socket
+from dataclasses import dataclass
 from math import gcd
 from queue import Empty, Queue
 from threading import Event, Lock, Thread
@@ -68,6 +69,102 @@ SUPPORTED_LEMONFOX_VOICES = {
 }
 
 
+@dataclass(frozen=True)
+class _Provider:
+    """One OpenAI-compatible /audio/speech endpoint."""
+
+    name: str
+    base_url: str
+    api_key: str
+    model: str
+    sample_rate: int
+    enforce_catalog: bool
+
+
+ALT_ENV_PREFIX = "VOICE_ALT_TTS_"
+
+
+def _alt_provider_from_env() -> tuple[_Provider | None, dict[str, str]]:
+    """A second provider chosen by voice name, so one voice server can serve products with different voices.
+
+    VOICE_ALT_TTS_BASE_URL / _API_KEY / _MODEL / _SAMPLE_RATE and VOICE_ALT_TTS_VOICES (comma separated). A session
+    that asks for one of those voices uses this provider; every other session keeps the default (Lemonfox).
+    """
+    base = os.getenv(ALT_ENV_PREFIX + "BASE_URL", "").strip().rstrip("/")
+    key = os.getenv(ALT_ENV_PREFIX + "API_KEY", "").strip()
+    model = os.getenv(ALT_ENV_PREFIX + "MODEL", "").strip()
+    voices = {v.strip().lower(): v.strip() for v in os.getenv(ALT_ENV_PREFIX + "VOICES", "").split(",") if v.strip()}
+    if not (base and key and model and voices):
+        return None, {}
+    try:
+        rate = int(os.getenv(ALT_ENV_PREFIX + "SAMPLE_RATE", "24000"))
+    except ValueError:
+        rate = 24000
+    return _Provider("alt", base, key, model, rate, enforce_catalog=False), voices
+
+
+class _LegacyBlocks:
+    """Fixed-ratio block resampling used for Lemonfox's 24 kHz audio (unchanged behaviour)."""
+
+    def __init__(self, handler: "LemonfoxTTSHandler") -> None:
+        self._handler = handler
+        self._buffer = bytearray()
+
+    def feed(self, raw: bytes) -> list[np.ndarray]:
+        self._buffer.extend(raw)
+        return list(self._handler._drain_source_buffer(self._buffer))
+
+    def finish(self) -> list[np.ndarray]:
+        if not self._buffer:
+            return []
+        return [self._handler._pcm24k_bytes_to_block(np.frombuffer(bytes(self._buffer), dtype=np.int16))]
+
+
+class _StreamBlocks:
+    """Streaming resampler for providers whose rate has no short filter (e.g. 44.1 kHz -> 16 kHz).
+
+    Resampling each small block on its own puts a filter edge click on every block boundary, so the whole
+    sentence goes through one stateful soxr stream instead.
+    """
+
+    def __init__(self, in_rate: int, out_rate: int, blocksize: int) -> None:
+        import soxr
+
+        self._stream = soxr.ResampleStream(in_rate, out_rate, 1, dtype="float32", quality="HQ")
+        self._blocksize = blocksize
+        self._carry = b""
+        self._pending = np.zeros(0, dtype=np.float32)
+
+    def _emit(self, flush: bool) -> list[np.ndarray]:
+        blocks: list[np.ndarray] = []
+        while len(self._pending) >= self._blocksize:
+            blocks.append(self._to_int16(self._pending[: self._blocksize]))
+            self._pending = self._pending[self._blocksize :]
+        if flush and len(self._pending):
+            tail = np.zeros(self._blocksize, dtype=np.float32)
+            tail[: len(self._pending)] = self._pending
+            blocks.append(self._to_int16(tail))
+            self._pending = np.zeros(0, dtype=np.float32)
+        return blocks
+
+    @staticmethod
+    def _to_int16(samples: np.ndarray) -> np.ndarray:
+        return np.asarray(np.clip(np.rint(samples * 32768.0), -32768, 32767), dtype=np.int16)
+
+    def feed(self, raw: bytes) -> list[np.ndarray]:
+        data = self._carry + raw
+        usable = len(data) - (len(data) % 2)
+        self._carry = data[usable:]
+        if usable:
+            samples = np.frombuffer(data[:usable], dtype="<i2").astype(np.float32) / 32768.0
+            self._pending = np.concatenate([self._pending, self._stream.resample_chunk(samples)])
+        return self._emit(flush=False)
+
+    def finish(self) -> list[np.ndarray]:
+        self._pending = np.concatenate([self._pending, self._stream.resample_chunk(np.zeros(0, dtype=np.float32), last=True)])
+        return self._emit(flush=True)
+
+
 class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
     """Streaming cloud TTS handler for Lemonfox."""
 
@@ -105,6 +202,10 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
         self.output_sample_rate = output_sample_rate
         self.timeout_s = timeout_s
         self.gen_kwargs = gen_kwargs or {}
+        self._default_provider = _Provider(
+            "default", self.base_url, self.api_key, self.model_name, self.input_sample_rate, enforce_catalog=True
+        )
+        self._alt_provider, self._alt_voices = _alt_provider_from_env()
         self._prefetch: dict[tuple[str, str], tuple[int | None, Queue]] = {}
         self._prefetch_lock = Lock()
         self.client = httpx.Client(
@@ -137,18 +238,18 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
             speculative_turns.commit(tts_input.turn_id, tts_input.turn_revision)
 
         generation = self.cancel_scope.generation if self.cancel_scope else None
-        voice = self._resolve_voice(tts_input)
-        payload = self._payload(tts_input.text, voice)
+        provider, voice = self._resolve(tts_input)
+        payload = self._payload(tts_input.text, voice, provider)
 
         console.print(f"[green]ASSISTANT: {tts_input.text}")
         request_started_at = perf_counter()
         first_audio_at: float | None = None
-        source_buffer = bytearray()
         produced_samples = 0
+        blocks = self._new_blocks(provider)
 
         # This sentence may already be on its way (requested while the previous one was playing); then
         # start the next queued sentence's request so its audio is ready when this one ends.
-        raw_chunks = self._sentence_chunks((tts_input.text, voice), payload, generation, tts_input.turn_id)
+        raw_chunks = self._sentence_chunks((tts_input.text, voice), payload, provider, generation, tts_input.turn_id)
         self._prefetch_ahead(generation)
 
         for raw_chunk, prefetched in raw_chunks:
@@ -160,9 +261,10 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
             if first_audio_at is None:
                 first_audio_at = perf_counter()
                 logger.info(
-                    "Lemonfox TTS TTFA: %.2fs (%s%s)",
+                    "Lemonfox TTS TTFA: %.2fs (%s%s%s)",
                     first_audio_at - request_started_at,
                     voice,
+                    "" if provider is self._default_provider else f" via {provider.model}",
                     ", prefetched" if prefetched else "",
                 )
                 if tts_input.speech_stopped_at_s is not None:
@@ -172,15 +274,13 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
                         tts_input.turn_id,
                         tts_input.turn_revision,
                     )
-            source_buffer.extend(raw_chunk)
-            for audio_block in self._drain_source_buffer(source_buffer):
+            for audio_block in blocks.feed(raw_chunk):
                 produced_samples += len(audio_block)
                 yield audio_block
         if self._is_cancelled(generation):
             return
 
-        if source_buffer:
-            audio_block = self._pcm24k_bytes_to_block(np.frombuffer(bytes(source_buffer), dtype=np.int16))
+        for audio_block in blocks.finish():
             produced_samples += len(audio_block)
             yield audio_block
 
@@ -195,16 +295,28 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
             tts_input.turn_revision,
         )
 
-    def _payload(self, text: str, voice: str) -> dict[str, Any]:
-        return {
-            "model": self.model_name,
+    def _new_blocks(self, provider: _Provider) -> "_LegacyBlocks | _StreamBlocks":
+        common = gcd(provider.sample_rate, self.output_sample_rate)
+        up, down = self.output_sample_rate // common, provider.sample_rate // common
+        if provider.sample_rate != self.input_sample_rate or max(up, down) > 16:
+            # e.g. 44.1 kHz -> 16 kHz (160/441): needs one stateful stream, not per-block filters
+            return _StreamBlocks(provider.sample_rate, self.output_sample_rate, self.blocksize)
+        return _LegacyBlocks(self)
+
+    def _payload(self, text: str, voice: str, provider: _Provider) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "model": provider.model,
             "input": text,
             "voice": voice,
             "response_format": self.response_format,
-            "speed": self.speed,
         }
+        if self.speed != 1.0:  # not every provider accepts the field, and 1.0 is the default anyway
+            payload["speed"] = self.speed
+        return payload
 
-    def _iter_raw_chunks(self, payload: dict[str, Any], generation: int | None, turn_id: str | None) -> Iterator[bytes]:
+    def _iter_raw_chunks(
+        self, payload: dict[str, Any], provider: _Provider, generation: int | None, turn_id: str | None
+    ) -> Iterator[bytes]:
         """Raw audio bytes for one sentence, with every guard: bounded reads, interruption, one retry path."""
         started_at = perf_counter()
         received = 0
@@ -215,7 +327,11 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
             watcher_done = Event()
             try:
                 with self.client.stream(
-                    "POST", f"{self.base_url}/audio/speech", json=payload, timeout=self._request_timeout()
+                    "POST",
+                    f"{provider.base_url}/audio/speech",
+                    json=payload,
+                    headers={"Authorization": f"Bearer {provider.api_key}"},
+                    timeout=self._request_timeout(),
                 ) as response:
                     response.raise_for_status()
                     # Closing the response is the only way to unblock a read that is waiting on the
@@ -282,23 +398,25 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
                     upcoming.turn_id, upcoming.turn_revision
                 ):
                     continue
-                voice = self._resolve_voice(upcoming)
+                provider, voice = self._resolve(upcoming)
                 key = (upcoming.text, voice)
                 if key in self._prefetch or not upcoming.text.strip():
                     continue
                 chunks: Queue = Queue()
                 self._prefetch[key] = (generation, chunks)
-                payload = self._payload(upcoming.text, voice)
+                payload = self._payload(upcoming.text, voice, provider)
                 Thread(
                     target=self._fill_prefetch,
-                    args=(payload, generation, upcoming.turn_id, chunks),
+                    args=(payload, provider, generation, upcoming.turn_id, chunks),
                     name="lemonfox-prefetch",
                     daemon=True,
                 ).start()
 
-    def _fill_prefetch(self, payload: dict[str, Any], generation: int | None, turn_id: str | None, out: Queue) -> None:
+    def _fill_prefetch(
+        self, payload: dict[str, Any], provider: _Provider, generation: int | None, turn_id: str | None, out: Queue
+    ) -> None:
         try:
-            for raw_chunk in self._iter_raw_chunks(payload, generation, turn_id):
+            for raw_chunk in self._iter_raw_chunks(payload, provider, generation, turn_id):
                 out.put(raw_chunk)
         except Exception as exc:  # the consumer falls back to a direct request if nothing arrived
             logger.warning("Lemonfox TTS prefetch failed: %s: %s", type(exc).__name__, exc)
@@ -306,7 +424,7 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
             out.put(None)
 
     def _sentence_chunks(
-        self, key: tuple[str, str], payload: dict[str, Any], generation: int | None, turn_id: str | None
+        self, key: tuple[str, str], payload: dict[str, Any], provider: _Provider, generation: int | None, turn_id: str | None
     ) -> Iterator[tuple[bytes, bool]]:
         """(chunk, was_prefetched) pairs; a look-ahead that delivered nothing falls back to a direct request."""
         early = self._take_prefetched(key, generation)
@@ -317,7 +435,7 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
                 yield chunk, True
             if got or self._is_cancelled(generation):
                 return
-        for chunk in self._iter_raw_chunks(payload, generation, turn_id):
+        for chunk in self._iter_raw_chunks(payload, provider, generation, turn_id):
             yield chunk, False
 
     def _take_prefetched(self, key: tuple[str, str], generation: int | None) -> Iterator[bytes] | None:
@@ -400,13 +518,14 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
         return self.output_sample_rate // common, self.input_sample_rate // common
 
     def _resolve_voice(self, tts_input: TTSInput) -> str:
-        response_voice = self._response_voice(tts_input.response)
-        if response_voice:
-            return self._normalize_voice(response_voice)
-        runtime_voice = self._runtime_voice(tts_input.runtime_config)
-        if runtime_voice:
-            return self._normalize_voice(runtime_voice)
-        return self._normalize_voice(self.default_voice)
+        return self._resolve(tts_input)[1]
+
+    def _resolve(self, tts_input: TTSInput) -> tuple[_Provider, str]:
+        """Which provider and voice this sentence uses (by the voice the session asked for)."""
+        requested = self._response_voice(tts_input.response) or self._runtime_voice(tts_input.runtime_config)
+        if requested and self._alt_provider is not None and requested.strip().lower() in self._alt_voices:
+            return self._alt_provider, self._alt_voices[requested.strip().lower()]
+        return self._default_provider, self._normalize_voice(requested or self.default_voice)
 
     def _normalize_voice(self, voice: str) -> str:
         normalized = voice.strip().lower()
