@@ -130,3 +130,106 @@ def test_interruption_frees_the_thread_immediately_without_waiting_for_the_read_
         assert elapsed < 3, f"interrupt took {elapsed:.1f}s to free the TTS thread"
     finally:
         provider.close()
+
+
+# ── sentence look-ahead ─────────────────────────────────────────────────────
+
+class _PacedProvider(_Provider):
+    """Streams one second of audio in 100 ms steps after a first-byte delay, and records request times."""
+
+    def __init__(self, first_byte_delay=0.6):
+        self.delay = first_byte_delay
+        self.started = []
+        super().__init__(["paced"])
+        handler = self
+        base = self.server.RequestHandlerClass
+        orig = base.do_POST
+
+        def do_post(req):
+            if handler.behaviours[min(handler.requests, len(handler.behaviours) - 1)] == "paced":
+                handler.started.append(time.monotonic())
+                req.rfile.read(int(req.headers.get("content-length", 0)))
+                handler.requests += 1
+                req.send_response(200)
+                req.send_header("Transfer-Encoding", "chunked")
+                req.end_headers()
+                time.sleep(handler.delay)
+                try:
+                    for i in range(10):
+                        data = TONE[i * 2400 : (i + 1) * 2400]
+                        req.wfile.write(f"{len(data):x}\r\n".encode() + data + b"\r\n")
+                        req.wfile.flush()
+                        time.sleep(0.1)
+                    req.wfile.write(b"0\r\n\r\n")
+                except (BrokenPipeError, ConnectionResetError):
+                    pass
+            else:
+                orig(req)
+
+        base.do_POST = do_post
+
+
+def _inputs(*texts):
+    return [TTSInput(text=t, turn_id="t", turn_revision=0) for t in texts]
+
+
+def test_next_sentence_is_requested_while_the_current_one_is_still_streaming():
+    from queue import Queue
+
+    provider = _PacedProvider(first_byte_delay=0.6)
+    try:
+        scope = CancelScope()
+        handler = _handler(provider.url, scope)
+        first, second = _inputs("First sentence.", "Second sentence.")
+        handler.queue_in = Queue()
+        handler.queue_in.put(second)
+
+        t0 = time.monotonic()
+        list(handler.process(first))
+        first_done = time.monotonic()
+        gen2 = handler.process(second)
+        next(gen2)
+        gap = time.monotonic() - first_done
+
+        assert len(provider.started) == 2
+        # the second request left within moments of the first, not after the first finished
+        assert provider.started[1] - provider.started[0] < 0.5
+        # so its first audio is ready at once instead of one provider start-up later
+        assert gap < 0.3, f"gap between sentences was {gap:.2f}s"
+        assert first_done - t0 > 1.4
+    finally:
+        provider.close()
+
+
+def test_without_look_ahead_each_sentence_pays_the_provider_start_up_delay():
+    provider = _PacedProvider(first_byte_delay=0.6)
+    try:
+        scope = CancelScope()
+        handler = _handler(provider.url, scope)  # no queue_in: nothing to look ahead at
+        first, second = _inputs("First sentence.", "Second sentence.")
+        list(handler.process(first))
+        t = time.monotonic()
+        next(handler.process(second))
+        assert time.monotonic() - t > 0.5
+    finally:
+        provider.close()
+
+
+def test_interrupt_discards_a_look_ahead_in_flight():
+    from queue import Queue
+
+    provider = _PacedProvider(first_byte_delay=0.2)
+    try:
+        scope = CancelScope()
+        handler = _handler(provider.url, scope)
+        first, second = _inputs("First sentence.", "Second sentence.")
+        handler.queue_in = Queue()
+        handler.queue_in.put(second)
+        gen = handler.process(first)
+        next(gen)
+        scope.cancel()
+        assert list(gen) == []  # the interrupted sentence stops
+        # the look-ahead belonged to the old generation: a new response does not reuse it
+        assert handler._take_prefetched(("Second sentence.", "aoede"), scope.generation) is None
+    finally:
+        provider.close()

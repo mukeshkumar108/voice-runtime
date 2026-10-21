@@ -4,7 +4,8 @@ import logging
 import os
 import socket
 from math import gcd
-from threading import Event, Thread
+from queue import Empty, Queue
+from threading import Event, Lock, Thread
 from time import perf_counter
 from typing import Any, Iterator, Optional
 
@@ -33,6 +34,8 @@ DEFAULT_READ_TIMEOUT_S = 4.0
 # the provider being briefly overloaded, and the next request is normally quick).
 EMPTY_STREAM_RETRIES = 2
 CANCEL_POLL_S = 0.1
+# How many queued sentences are requested ahead of playback. One keeps provider concurrency at two requests.
+PREFETCH_AHEAD = 1
 SUPPORTED_LEMONFOX_VOICES = {
     "heart",
     "bella",
@@ -102,6 +105,8 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
         self.output_sample_rate = output_sample_rate
         self.timeout_s = timeout_s
         self.gen_kwargs = gen_kwargs or {}
+        self._prefetch: dict[tuple[str, str], tuple[int | None, Queue]] = {}
+        self._prefetch_lock = Lock()
         self.client = httpx.Client(
             timeout=self.timeout_s,
             headers={"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
@@ -133,21 +138,77 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
 
         generation = self.cancel_scope.generation if self.cancel_scope else None
         voice = self._resolve_voice(tts_input)
-        payload = {
-            "model": self.model_name,
-            "input": tts_input.text,
-            "voice": voice,
-            "response_format": self.response_format,
-            "speed": self.speed,
-        }
+        payload = self._payload(tts_input.text, voice)
 
         console.print(f"[green]ASSISTANT: {tts_input.text}")
         request_started_at = perf_counter()
         first_audio_at: float | None = None
         source_buffer = bytearray()
         produced_samples = 0
-        attempts = 0
 
+        # This sentence may already be on its way (requested while the previous one was playing); then
+        # start the next queued sentence's request so its audio is ready when this one ends.
+        raw_chunks = self._sentence_chunks((tts_input.text, voice), payload, generation, tts_input.turn_id)
+        self._prefetch_ahead(generation)
+
+        for raw_chunk, prefetched in raw_chunks:
+            if self._is_cancelled(generation):
+                logger.info("Lemonfox TTS generation cancelled (interruption)")
+                return
+            if not raw_chunk:
+                continue
+            if first_audio_at is None:
+                first_audio_at = perf_counter()
+                logger.info(
+                    "Lemonfox TTS TTFA: %.2fs (%s%s)",
+                    first_audio_at - request_started_at,
+                    voice,
+                    ", prefetched" if prefetched else "",
+                )
+                if tts_input.speech_stopped_at_s is not None:
+                    logger.info(
+                        "Last speech detected to first speech out: %.3fs (turn=%s rev=%s)",
+                        first_audio_at - tts_input.speech_stopped_at_s,
+                        tts_input.turn_id,
+                        tts_input.turn_revision,
+                    )
+            source_buffer.extend(raw_chunk)
+            for audio_block in self._drain_source_buffer(source_buffer):
+                produced_samples += len(audio_block)
+                yield audio_block
+        if self._is_cancelled(generation):
+            return
+
+        if source_buffer:
+            audio_block = self._pcm24k_bytes_to_block(np.frombuffer(bytes(source_buffer), dtype=np.int16))
+            produced_samples += len(audio_block)
+            yield audio_block
+
+        elapsed_s = perf_counter() - request_started_at
+        produced_s = produced_samples / self.output_sample_rate
+        logger.info(
+            "Lemonfox TTS produced %.2fs audio in %.2fs (rate=%.2fx, turn=%s rev=%s)",
+            produced_s,
+            elapsed_s,
+            produced_s / elapsed_s if elapsed_s > 0 else 0.0,
+            tts_input.turn_id,
+            tts_input.turn_revision,
+        )
+
+    def _payload(self, text: str, voice: str) -> dict[str, Any]:
+        return {
+            "model": self.model_name,
+            "input": text,
+            "voice": voice,
+            "response_format": self.response_format,
+            "speed": self.speed,
+        }
+
+    def _iter_raw_chunks(self, payload: dict[str, Any], generation: int | None, turn_id: str | None) -> Iterator[bytes]:
+        """Raw audio bytes for one sentence, with every guard: bounded reads, interruption, one retry path."""
+        started_at = perf_counter()
+        received = 0
+        attempts = 0
         while True:
             attempts += 1
             stalled = False
@@ -168,65 +229,117 @@ class LemonfoxTTSHandler(BaseHandler[TTSIn, TTSOut]):
                     try:
                         for raw_chunk in response.iter_bytes():
                             if self._is_cancelled(generation):
-                                logger.info("Lemonfox TTS generation cancelled (interruption)")
                                 return
-                            if not raw_chunk:
-                                continue
-                            if first_audio_at is None:
-                                first_audio_at = perf_counter()
-                                logger.info(
-                                    "Lemonfox TTS TTFA: %.2fs (%s)",
-                                    first_audio_at - request_started_at,
-                                    voice,
-                                )
-                                if tts_input.speech_stopped_at_s is not None:
-                                    logger.info(
-                                        "Last speech detected to first speech out: %.3fs (turn=%s rev=%s)",
-                                        first_audio_at - tts_input.speech_stopped_at_s,
-                                        tts_input.turn_id,
-                                        tts_input.turn_revision,
-                                    )
-                            source_buffer.extend(raw_chunk)
-                            for audio_block in self._drain_source_buffer(source_buffer):
-                                produced_samples += len(audio_block)
-                                yield audio_block
+                            if raw_chunk:
+                                received += len(raw_chunk)
+                                yield raw_chunk
                     finally:
                         watcher_done.set()
             except (httpx.TransportError, httpx.StreamError, OSError) as exc:
                 if self._is_cancelled(generation):
-                    logger.info("Lemonfox TTS generation cancelled (interruption)")
                     return
                 stalled = True
                 logger.warning(
-                    "Lemonfox TTS stream failed after %.1fs, %d sample(s) so far (attempt %d, turn=%s): %s: %s",
-                    perf_counter() - request_started_at,
-                    produced_samples,
+                    "Lemonfox TTS stream failed after %.1fs, %d byte(s) so far (attempt %d, turn=%s): %s: %s",
+                    perf_counter() - started_at,
+                    received,
                     attempts,
-                    tts_input.turn_id,
+                    turn_id,
                     type(exc).__name__,
                     exc,
                 )
             if self._is_cancelled(generation):
                 return
-            if stalled and produced_samples == 0 and not source_buffer and attempts <= EMPTY_STREAM_RETRIES:
+            if stalled and received == 0 and attempts <= EMPTY_STREAM_RETRIES:
                 continue
-            break
+            return
 
-        if source_buffer:
-            audio_block = self._pcm24k_bytes_to_block(np.frombuffer(bytes(source_buffer), dtype=np.int16))
-            produced_samples += len(audio_block)
-            yield audio_block
+    # ── look-ahead: request the next queued sentence while this one is still being produced ──
 
-        elapsed_s = perf_counter() - request_started_at
-        produced_s = produced_samples / self.output_sample_rate
-        logger.info(
-            "Lemonfox TTS produced %.2fs audio in %.2fs (rate=%.2fx, turn=%s rev=%s)",
-            produced_s,
-            elapsed_s,
-            produced_s / elapsed_s if elapsed_s > 0 else 0.0,
-            tts_input.turn_id,
-            tts_input.turn_revision,
-        )
+    def _peek_upcoming(self, limit: int) -> list[TTSInput]:
+        queue_in = getattr(self, "queue_in", None)
+        if queue_in is None:
+            return []
+        with queue_in.mutex:
+            items = list(queue_in.queue)
+        upcoming: list[TTSInput] = []
+        for item in items:
+            if not isinstance(item, TTSInput):
+                break  # end of this response, a control message, or anything that is not plain speech
+            upcoming.append(item)
+            if len(upcoming) >= limit:
+                break
+        return upcoming
+
+    def _prefetch_ahead(self, generation: int | None) -> None:
+        speculative_turns = getattr(self, "speculative_turns", None)
+        with self._prefetch_lock:
+            # forget look-aheads that belong to an interrupted response
+            for key in [k for k, v in self._prefetch.items() if v[0] != generation]:
+                del self._prefetch[key]
+            for upcoming in self._peek_upcoming(PREFETCH_AHEAD):
+                if speculative_turns and not speculative_turns.is_latest_after_reopen_grace(
+                    upcoming.turn_id, upcoming.turn_revision
+                ):
+                    continue
+                voice = self._resolve_voice(upcoming)
+                key = (upcoming.text, voice)
+                if key in self._prefetch or not upcoming.text.strip():
+                    continue
+                chunks: Queue = Queue()
+                self._prefetch[key] = (generation, chunks)
+                payload = self._payload(upcoming.text, voice)
+                Thread(
+                    target=self._fill_prefetch,
+                    args=(payload, generation, upcoming.turn_id, chunks),
+                    name="lemonfox-prefetch",
+                    daemon=True,
+                ).start()
+
+    def _fill_prefetch(self, payload: dict[str, Any], generation: int | None, turn_id: str | None, out: Queue) -> None:
+        try:
+            for raw_chunk in self._iter_raw_chunks(payload, generation, turn_id):
+                out.put(raw_chunk)
+        except Exception as exc:  # the consumer falls back to a direct request if nothing arrived
+            logger.warning("Lemonfox TTS prefetch failed: %s: %s", type(exc).__name__, exc)
+        finally:
+            out.put(None)
+
+    def _sentence_chunks(
+        self, key: tuple[str, str], payload: dict[str, Any], generation: int | None, turn_id: str | None
+    ) -> Iterator[tuple[bytes, bool]]:
+        """(chunk, was_prefetched) pairs; a look-ahead that delivered nothing falls back to a direct request."""
+        early = self._take_prefetched(key, generation)
+        if early is not None:
+            got = False
+            for chunk in early:
+                got = True
+                yield chunk, True
+            if got or self._is_cancelled(generation):
+                return
+        for chunk in self._iter_raw_chunks(payload, generation, turn_id):
+            yield chunk, False
+
+    def _take_prefetched(self, key: tuple[str, str], generation: int | None) -> Iterator[bytes] | None:
+        with self._prefetch_lock:
+            entry = self._prefetch.pop(key, None)
+        if entry is None or entry[0] != generation:
+            return None
+        chunks: Queue = entry[1]
+
+        def read() -> Iterator[bytes]:
+            while True:
+                try:
+                    item = chunks.get(timeout=CANCEL_POLL_S)
+                except Empty:
+                    if self._is_cancelled(generation):
+                        return
+                    continue
+                if item is None:
+                    return
+                yield item
+
+        return read()
 
     def cleanup(self) -> None:
         self.client.close()
