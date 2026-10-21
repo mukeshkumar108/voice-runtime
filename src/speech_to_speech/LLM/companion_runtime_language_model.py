@@ -255,7 +255,7 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
             len(history),
             (self._req_reliability or {}).get("status"),
         )
-        return {
+        payload: dict[str, Any] = {
             "contract_version": "v1",
             "turn_id": turn_id,
             "conversation_id": conversation_id,
@@ -268,6 +268,10 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
             "transcript_reliability": self._req_reliability,
             "medium": "voice",
         }
+        if identity is not None and identity.application_context:
+            # Product-owned context from the host, carried verbatim (never read by voice).
+            payload["application_context"] = identity.application_context
+        return payload
 
     def _build_optional_kwargs(self, req_tools: Any, req_tool_choice: Any) -> dict[str, Any]:
         # Tools execute inside the brain. Voice never forwards client tools.

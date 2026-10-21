@@ -29,6 +29,10 @@ logger = logging.getLogger(__name__)
 
 SECRET_ENV = "VOICE_SESSION_SECRET"
 HOST_URL_ENV = "VOICE_HOST_URL"
+# Comma separated origins a token may name in its `host` claim (a second product host).
+ALLOWED_HOSTS_ENV = "VOICE_ALLOWED_HOSTS"
+
+MAX_CONSTITUTION_CHARS = 40_000
 
 
 @dataclass
@@ -42,6 +46,10 @@ class CallIdentity:
     history: list[dict[str, Any]] = field(default_factory=list)
     session_routing: dict[str, Any] = field(default_factory=dict)
     turns_sent: int = 0
+    # Product host this call talks to; empty means the default VOICE_HOST_URL.
+    host: str = ""
+    # Opaque product context from the host, passed to the brain as TurnInput.application_context.
+    application_context: Optional[dict[str, Any]] = None
 
 
 def _b64url_decode(value: str) -> bytes:
@@ -50,6 +58,11 @@ def _b64url_decode(value: str) -> bytes:
 
 def secret_configured() -> bool:
     return bool(os.getenv(SECRET_ENV, "").strip())
+
+
+def allowed_hosts() -> frozenset[str]:
+    raw = os.getenv(ALLOWED_HOSTS_ENV, "")
+    return frozenset(h.strip().rstrip("/") for h in raw.split(",") if h.strip())
 
 
 def verify_token(token: Optional[str], now: Optional[float] = None) -> Optional[dict[str, Any]]:
@@ -72,6 +85,11 @@ def verify_token(token: Optional[str], now: Optional[float] = None) -> Optional[
     if not all(isinstance(claims.get(k), str) for k in ("uid", "cid", "tz")):
         return None
     if float(claims.get("exp", 0)) < (now if now is not None else time.time()):
+        return None
+    # A token naming another product host is only honoured for allow-listed origins; otherwise the
+    # call would send its transcript to a host the operator never approved.
+    host = claims.get("host")
+    if host is not None and (not isinstance(host, str) or host.rstrip("/") not in allowed_hosts()):
         return None
     return claims
 
@@ -111,6 +129,16 @@ def host_base_url() -> str:
     return os.getenv(HOST_URL_ENV, "").strip().rstrip("/")
 
 
+def _valid_application_context(value: Any) -> Optional[dict[str, Any]]:
+    """Pass through only the shape the Runtime accepts (product-context-v1 constitution)."""
+    if not isinstance(value, dict):
+        return None
+    constitution = value.get("character_constitution")
+    if not isinstance(constitution, str) or not constitution.strip() or len(constitution) > MAX_CONSTITUTION_CHARS:
+        return None
+    return {"context_type": "product-context-v1", "character_constitution": constitution}
+
+
 async def load_call_context(claims: dict[str, Any], token: str) -> CallIdentity:
     """Build the call identity; history/state come from the product host."""
     identity = CallIdentity(
@@ -121,7 +149,8 @@ async def load_call_context(claims: dict[str, Any], token: str) -> CallIdentity:
         token=token,
         started_at_iso=time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
     )
-    base = host_base_url()
+    identity.host = str(claims.get("host") or "").rstrip("/")
+    base = identity.host or host_base_url()
     if not base:
         logger.warning("%s is not set; the call starts with an empty history", HOST_URL_ENV)
         return identity
@@ -137,6 +166,7 @@ async def load_call_context(claims: dict[str, Any], token: str) -> CallIdentity:
         ]
         routing = body.get("session_routing")
         identity.session_routing = routing if isinstance(routing, dict) else {}
+        identity.application_context = _valid_application_context(body.get("application_context"))
     except Exception as exc:  # the call can still run; Cortex rehydrates on turn one
         logger.warning("Could not load call context from host: %s", exc)
     return identity
@@ -147,7 +177,7 @@ def report_completed_turn(
     next_session_state: Optional[dict[str, Any]], reliability_status: str,
 ) -> None:
     """Fire-and-forget (daemon thread): a spoken turn becomes chat history."""
-    base = host_base_url()
+    base = identity.host or host_base_url()
     if not base or not user_text.strip() or not assistant_text.strip():
         return
 

@@ -147,3 +147,57 @@ def test_binding_a_connection_to_a_chat_uses_the_services_own_state():
     connection = service.register()
     service.bind_conversation(connection, "11111111-1111-4111-8111-111111111111")
     assert service._state(connection).conversation_id == "11111111-1111-4111-8111-111111111111"
+
+
+def test_token_naming_another_host_needs_the_allow_list(monkeypatch):
+    monkeypatch.delenv(call_identity.ALLOWED_HOSTS_ENV, raising=False)
+    assert call_identity.verify_token(_token(host="https://bloom.example")) is None
+    monkeypatch.setenv(call_identity.ALLOWED_HOSTS_ENV, "https://bloom.example, https://other.example/")
+    assert call_identity.verify_token(_token(host="https://bloom.example/"))["host"] == "https://bloom.example/"
+    assert call_identity.verify_token(_token(host="https://evil.example")) is None
+    assert call_identity.verify_token(_token()) is not None  # no host claim: default host, as before
+
+
+def test_call_uses_the_token_host_and_carries_application_context(monkeypatch):
+    monkeypatch.setenv(call_identity.HOST_URL_ENV, "https://sophie.example")
+    monkeypatch.setenv(call_identity.ALLOWED_HOSTS_ENV, "https://bloom.example")
+    seen = {}
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        return httpx.Response(200, json={
+            "history": [],
+            "session_routing": {},
+            "application_context": {"context_type": "product-context-v1", "character_constitution": "You are Bluum."},
+        })
+
+    real = httpx.AsyncClient
+    monkeypatch.setattr(call_identity.httpx, "AsyncClient",
+                        lambda **kw: real(transport=httpx.MockTransport(handle), **kw))
+    claims = call_identity.verify_token(_token(host="https://bloom.example", companion="bloom"))
+    import asyncio
+    identity = asyncio.run(call_identity.load_call_context(claims, "tok"))
+    assert seen["url"] == "https://bloom.example/api/voice/context"
+    assert identity.host == "https://bloom.example" and identity.companion_id == "bloom"
+    call_identity.REGISTRY.bind(identity)
+    chat = Chat(10)
+    chat.add_item(make_user_message("hi"))
+    payload = _handler(_req_conversation_id=identity.conversation_id)._serialize(chat)
+    assert payload["companion_id"] == "bloom"
+    assert payload["application_context"] == {
+        "context_type": "product-context-v1", "character_constitution": "You are Bluum."}
+
+
+def test_invalid_application_context_is_dropped():
+    assert call_identity._valid_application_context({"character_constitution": ""}) is None
+    assert call_identity._valid_application_context({"character_constitution": "x" * 40_001}) is None
+    assert call_identity._valid_application_context("nope") is None
+    assert call_identity._valid_application_context({"character_constitution": "ok", "extra": 1}) == {
+        "context_type": "product-context-v1", "character_constitution": "ok"}
+
+
+def test_sophie_turns_have_no_application_context():
+    _identity()
+    chat = Chat(10)
+    chat.add_item(make_user_message("hi"))
+    assert "application_context" not in _handler(_req_conversation_id="chat-1")._serialize(chat)

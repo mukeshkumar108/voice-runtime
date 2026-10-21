@@ -37,6 +37,10 @@ connections are refused. A bound call is a *modality of an existing chat*:
   Voice never reads or edits the state.
 - `entry_context.chronology`: the call is its own sitting (`new` on its first
   turn, `same` afterwards).
+- A second product host may issue tokens: a `host` claim names the host to use for `/api/voice/context` and
+  `/api/voice/turn`, and is honoured only for origins listed in `VOICE_ALLOWED_HOSTS` (otherwise the token is
+  refused). The context response may carry `application_context` (`character_constitution`, max 40k chars),
+  copied verbatim into each TurnInput as `product-context-v1`; voice never reads it.
 - After each completed turn, voice posts `{turn_id, user_text, assistant_text,
   next_session_state}` to `{VOICE_HOST_URL}/api/voice/turn` (best effort), so
   spoken turns become ordinary chat history, mirrored exactly like text.
