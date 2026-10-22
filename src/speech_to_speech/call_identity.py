@@ -43,6 +43,7 @@ class CallIdentity:
     companion_id: str
     token: str
     started_at_iso: str
+    started_epoch: float = field(default_factory=time.time)
     history: list[dict[str, Any]] = field(default_factory=list)
     session_routing: dict[str, Any] = field(default_factory=dict)
     turns_sent: int = 0

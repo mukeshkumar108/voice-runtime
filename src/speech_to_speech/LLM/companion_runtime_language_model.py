@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 from collections.abc import Iterator
 from time import monotonic
@@ -29,7 +30,7 @@ from openai.types.realtime.realtime_conversation_item_assistant_message import (
 )
 
 from speech_to_speech import call_identity
-from speech_to_speech.analysis import voice_features
+from speech_to_speech.analysis import session_report, voice_features
 from speech_to_speech.LLM.base_openai_compatible_language_model import (
     AssistantMessage,
     BaseOpenAICompatibleHandler,
@@ -295,26 +296,53 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
         if turn_id and voice_features.enabled():
             self.__dict__.setdefault("_voice_turns", {}).setdefault(conversation_id, []).append(turn_id)
 
-    def _log_voice_features(self, episode: dict[str, Any] | None) -> None:
-        """One log line of numbers for the finished call (no audio). Bloom calls only."""
+    def _log_voice_features(self, episode: dict[str, Any] | None) -> dict[str, Any] | None:
+        """One log line of numbers for the finished call (no audio). Bloom calls only. Returns the session summary."""
         try:
             if not episode or not voice_features.enabled():
-                return
+                return None
             turn_ids = self.__dict__.get("_voice_turns", {}).pop(episode["conversation_id"], [])
             if episode.get("companion_id") != "bloom":
-                return
+                return None
             utterances = voice_features.take(turn_ids)
             if not utterances:
-                return
+                return None
+            summary = voice_features.summarize(utterances)
             logger.info("voice-features %s", json.dumps({
                 "conversation_id": episode["conversation_id"], "user_id": episode.get("user_id"),
-                "summary": voice_features.summarize(utterances), "utterances": utterances}, separators=(",", ":")))
+                "summary": summary, "utterances": utterances}, separators=(",", ":")))
+            return summary
         except Exception:  # noqa: BLE001
             logger.warning("voice features log failed", exc_info=True)
+            return None
+
+    def _start_session_report(self, episode: dict[str, Any] | None, voice: dict[str, Any] | None) -> None:
+        """After a Bloom call: analyse the transcript in the background and post the report to the host."""
+        try:
+            if not episode or episode.get("companion_id") != "bloom" or not session_report.enabled():
+                return
+            identity = call_identity.REGISTRY.get(episode["conversation_id"])
+            if identity is None:
+                return
+            host = identity.host or call_identity.host_base_url()
+            try:
+                from datetime import datetime
+                from zoneinfo import ZoneInfo
+                local_date = datetime.now(ZoneInfo(identity.timezone)).strftime("%Y-%m-%d")
+            except Exception:  # noqa: BLE001
+                local_date = time.strftime("%Y-%m-%d", time.gmtime())
+            session_report.start(
+                host=host, token=identity.token, conversation_id=episode["conversation_id"],
+                messages=list(episode.get("messages") or []), voice=voice,
+                duration_s=int(time.time() - identity.started_epoch) if getattr(identity, "started_epoch", None) else None,
+                local_date=local_date, flow=None)
+        except Exception:  # noqa: BLE001
+            logger.warning("session report start failed", exc_info=True)
 
     def on_session_end(self) -> None:
         episode, self._episode = getattr(self, "_episode", None), None
-        self._log_voice_features(episode)
+        voice_summary = self._log_voice_features(episode)
+        self._start_session_report(episode, voice_summary)
         if not episode or len(episode["messages"]) < 2:
             return
         try:
