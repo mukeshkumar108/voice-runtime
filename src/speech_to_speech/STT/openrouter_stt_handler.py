@@ -13,6 +13,7 @@ import httpx
 import numpy as np
 from rich.console import Console
 
+from speech_to_speech.analysis import voice_features
 from speech_to_speech.pipeline.events import ResponseFailedEvent
 from speech_to_speech.pipeline.handler_types import STTIn, STTOut
 from speech_to_speech.pipeline.messages import Transcription
@@ -117,6 +118,7 @@ class OpenRouterSTTHandler(BaseSTTHandler):
         if vad_audio.mode != "final":
             return
 
+        voice_features.submit(vad_audio.turn_id, vad_audio.audio)  # off-path, best effort
         wav_bytes = self._wav_bytes_from_audio(vad_audio.audio)
         data: dict[str, Any] = {
             "model": self.model_name,

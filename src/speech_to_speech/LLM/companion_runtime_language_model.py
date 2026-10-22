@@ -29,6 +29,7 @@ from openai.types.realtime.realtime_conversation_item_assistant_message import (
 )
 
 from speech_to_speech import call_identity
+from speech_to_speech.analysis import voice_features
 from speech_to_speech.LLM.base_openai_compatible_language_model import (
     AssistantMessage,
     BaseOpenAICompatibleHandler,
@@ -143,6 +144,7 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
         fixed spoken retry prompt when the brain fails at the transport level.
         """
         self._req_conversation_id = request.conversation_id or self.conversation_id
+        self._note_voice_turn(self._req_conversation_id, request.turn_id)
         self._req_reliability = self._reliability_from_uncertainty(request.transcript_uncertainty)
         self._pending_brain_turn = None
         self._last_brain_error_code = None
@@ -289,8 +291,30 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
             episode["messages"].append(
                 {"id": f"hist_{len(episode['messages'])}", "role": "assistant", "content": text})
 
+    def _note_voice_turn(self, conversation_id: str, turn_id: str | None) -> None:
+        if turn_id and voice_features.enabled():
+            self.__dict__.setdefault("_voice_turns", {}).setdefault(conversation_id, []).append(turn_id)
+
+    def _log_voice_features(self, episode: dict[str, Any] | None) -> None:
+        """One log line of numbers for the finished call (no audio). Bloom calls only."""
+        try:
+            if not episode or not voice_features.enabled():
+                return
+            turn_ids = self.__dict__.get("_voice_turns", {}).pop(episode["conversation_id"], [])
+            if episode.get("companion_id") != "bloom":
+                return
+            utterances = voice_features.take(turn_ids)
+            if not utterances:
+                return
+            logger.info("voice-features %s", json.dumps({
+                "conversation_id": episode["conversation_id"], "user_id": episode.get("user_id"),
+                "summary": voice_features.summarize(utterances), "utterances": utterances}, separators=(",", ":")))
+        except Exception:  # noqa: BLE001
+            logger.warning("voice features log failed", exc_info=True)
+
     def on_session_end(self) -> None:
         episode, self._episode = getattr(self, "_episode", None), None
+        self._log_voice_features(episode)
         if not episode or len(episode["messages"]) < 2:
             return
         try:
