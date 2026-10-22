@@ -101,3 +101,16 @@ def test_morning_asks_for_one_evening_thread_and_ten_things_allows_ten_facts(mon
 def test_notbeforehour_must_be_a_real_hour():
     d = sr.sanitize_delta({"threads": [{"topic": "a", "notBeforeHour": 25}, {"topic": "b", "notBeforeHour": 18}, {"topic": "c", "notBeforeHour": True}]})
     assert "notBeforeHour" not in d["threads"][0] and d["threads"][1]["notBeforeHour"] == 18 and "notBeforeHour" not in d["threads"][2]
+
+
+def test_a_morning_thread_is_always_held_until_six_in_the_evening(monkeypatch):
+    def fake(system, user, *, api_key, client=None, models=None):
+        if "private record" in system:
+            return {"card": {"headline": "x", "moment": "y"}, "profile": {}}, "m", 1, 1
+        return {"threads": [{"topic": "Dinner with my sister", "notBeforeDays": 0, "expiresInDays": 6}, {"ref": "thread_old", "topic": "", "status": "resolved"}]}, "m", 1, 1
+
+    monkeypatch.setattr(sr, "nano_json", fake)
+    r = sr.build_report([{"role": "user", "content": "looking forward to dinner"}], None, {}, api_key="k", local_date="2026-10-22", duration_s=60, flow="morning")
+    new, old = r["memoryDelta"]["threads"]
+    assert new["notBeforeHour"] == 18 and new["expiresInDays"] == 1.0 and "notBeforeDays" not in new
+    assert "notBeforeHour" not in old and old["status"] == "resolved"

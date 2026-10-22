@@ -251,6 +251,13 @@ def build_report(messages: list[dict[str, Any]], voice: dict[str, Any] | None, e
     if mem_r:
         parsed, model, tin, tout = mem_r
         report["memoryDelta"] = sanitize_delta(parsed, FLOW_MAX_ITEMS.get(flow or "", MAX_ITEMS))
+        if flow == "morning":
+            # A morning intention is for the evening. The model often leaves the timing out, so it is not left to the model.
+            for thread in report["memoryDelta"].get("threads", []):
+                if "ref" not in thread:
+                    thread["notBeforeHour"] = 18
+                    thread["expiresInDays"] = 1.0
+                    thread.pop("notBeforeDays", None)
         report["models"]["memory"] = model
         tokens["in"] += tin; tokens["out"] += tout
     report["models"]["tokens"] = tokens
