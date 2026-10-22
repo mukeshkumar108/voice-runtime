@@ -13,19 +13,15 @@ def _tone(seconds=1.5, hz=180.0, sr=16000):
 
 @pytest.fixture(autouse=True)
 def _reset(monkeypatch):
-    monkeypatch.setattr(vf, "_executor", None)
-    monkeypatch.setattr(vf, "_broken", False)
-    monkeypatch.setattr(vf, "_in_flight", 0)
+    monkeypatch.setattr(vf, "_pump", None)
+    monkeypatch.setattr(vf, "_jobs", vf.queue.Queue(maxsize=vf.MAX_IN_FLIGHT))
     vf._results.clear()
-    yield
-    if vf._executor is not None:
-        vf._executor.shutdown(wait=False, cancel_futures=True)
 
 
 def test_disabled_by_default_does_nothing(monkeypatch):
     monkeypatch.delenv("VOICE_FEATURES_ENABLED", raising=False)
     vf.submit("t1", _tone())
-    assert vf._executor is None and vf.take(["t1"]) == []
+    assert vf._pump is None and vf.take(["t1"]) == []
 
 
 def test_submit_returns_immediately_and_never_raises(monkeypatch):
@@ -35,7 +31,7 @@ def test_submit_returns_immediately_and_never_raises(monkeypatch):
     for i in range(20):
         vf.submit(f"t{i}", audio)       # far more than MAX_IN_FLIGHT: the rest are dropped, not queued
     assert time.perf_counter() - start < 0.5
-    assert vf._in_flight <= vf.MAX_IN_FLIGHT
+    assert vf._jobs.qsize() <= vf.MAX_IN_FLIGHT
     vf.submit(None, audio)
     vf.submit("bad", object())
 
@@ -43,7 +39,7 @@ def test_submit_returns_immediately_and_never_raises(monkeypatch):
 def test_short_and_empty_clips_are_skipped(monkeypatch):
     monkeypatch.setenv("VOICE_FEATURES_ENABLED", "1")
     vf.submit("short", _tone(0.2))
-    assert vf._executor is None
+    assert vf._pump is None
 
 
 def test_features_arrive_without_audio(monkeypatch):

@@ -6,12 +6,15 @@ slows, blocks or fails a turn. Disabled unless VOICE_FEATURES_ENABLED is set.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import queue
+import select
+import subprocess
+import sys
 import threading
-import time
 from collections import OrderedDict
-from concurrent.futures import Future, ProcessPoolExecutor
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -20,6 +23,7 @@ SAMPLE_RATE = 16000
 MIN_UTTERANCE_S = 0.6
 MAX_UTTERANCE_S = 60.0
 MAX_IN_FLIGHT = 4          # more than this and new utterances are skipped, never queued behind
+REPLY_TIMEOUT_S = 20.0     # a stuck worker is killed and replaced
 KEEP_RESULTS = 256         # newest results kept in memory, keyed by turn id
 WORKER_NICE = 15
 
@@ -28,14 +32,7 @@ def enabled() -> bool:
     return os.getenv("VOICE_FEATURES_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-# ── runs in the worker process ────────────────────────────────────────────────
-
-def _init_worker() -> None:
-    try:
-        os.nice(WORKER_NICE)
-    except Exception:  # noqa: BLE001
-        pass
-
+# ── runs in the worker process (python -m speech_to_speech.analysis.voice_features) ──────
 
 def utterance_features(pcm: bytes, sr: int = SAMPLE_RATE) -> dict[str, Any]:
     """Features from 16 kHz int16 mono PCM. Pitch is in semitones re 100 Hz so voices are comparable."""
@@ -86,40 +83,74 @@ def utterance_features(pcm: bytes, sr: int = SAMPLE_RATE) -> dict[str, Any]:
     return out
 
 
-def _work(pcm: bytes) -> dict[str, Any] | None:
+def _worker_main() -> None:
+    """Read `turn_id nbytes\n` + PCM from stdin, answer one JSON line per utterance on stdout."""
     try:
-        return utterance_features(pcm)
-    except Exception:  # noqa: BLE001 - a bad clip must not matter
-        return None
+        os.nice(WORKER_NICE)
+    except Exception:  # noqa: BLE001
+        pass
+    stdin, stdout = sys.stdin.buffer, sys.stdout.buffer
+    while True:
+        header = stdin.readline()
+        if not header:
+            return
+        turn_id, nbytes = header.decode().split()
+        pcm = stdin.read(int(nbytes))
+        try:
+            features = utterance_features(pcm)
+        except Exception:  # noqa: BLE001 - a bad clip must not matter
+            features = None
+        stdout.write(json.dumps({"turn_id": turn_id, "features": features}).encode() + b"\n")
+        stdout.flush()
 
 
 # ── runs in the call's process: cheap and never blocks ────────────────────────
 
 _lock = threading.Lock()
-_executor: ProcessPoolExecutor | None = None
-_broken = False
-_in_flight = 0
+_jobs: "queue.Queue[tuple[str, bytes]]" = queue.Queue(maxsize=MAX_IN_FLIGHT)
+_pump: threading.Thread | None = None
 _results: "OrderedDict[str, dict[str, Any]]" = OrderedDict()
 
 
-def _get_executor() -> ProcessPoolExecutor | None:
-    global _executor, _broken
-    if _broken:
-        return None
-    if _executor is None:
+def _start_worker() -> subprocess.Popen:
+    return subprocess.Popen([sys.executable, "-m", "speech_to_speech.analysis.voice_features"],
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+
+def _pump_loop() -> None:
+    proc: subprocess.Popen | None = None
+    failures = 0
+    while failures < 5:
+        turn_id, pcm = _jobs.get()
         try:
-            import multiprocessing as mp
-            _executor = ProcessPoolExecutor(max_workers=1, mp_context=mp.get_context("spawn"), initializer=_init_worker)
-        except Exception:  # noqa: BLE001
-            logger.warning("voice features: could not start worker, disabled", exc_info=True)
-            _broken = True
-            return None
-    return _executor
+            if proc is None or proc.poll() is not None:
+                proc = _start_worker()
+            proc.stdin.write(f"{turn_id} {len(pcm)}\n".encode() + pcm)
+            proc.stdin.flush()
+            ready, _, _ = select.select([proc.stdout], [], [], REPLY_TIMEOUT_S)
+            if not ready:
+                raise TimeoutError("voice feature worker did not answer")
+            reply = json.loads(proc.stdout.readline())
+            failures = 0
+            if reply.get("features"):
+                with _lock:
+                    _results[turn_id] = reply["features"]
+                    while len(_results) > KEEP_RESULTS:
+                        _results.popitem(last=False)
+        except Exception:  # noqa: BLE001 - drop this measurement, replace the worker, carry on
+            failures += 1
+            logger.warning("voice features: worker failed (%d)", failures, exc_info=True)
+            if proc is not None:
+                proc.kill()
+                proc = None
+    logger.warning("voice features: giving up after repeated worker failures")
+    if proc is not None:
+        proc.kill()
 
 
 def submit(turn_id: str | None, audio: Any) -> None:
-    """Queue one utterance for measuring. Returns at once; never raises."""
-    global _in_flight
+    """Queue one utterance for measuring. Returns at once; never raises; drops when busy."""
+    global _pump
     try:
         if not turn_id or not enabled():
             return
@@ -127,21 +158,11 @@ def submit(turn_id: str | None, audio: Any) -> None:
         if n < MIN_UTTERANCE_S * SAMPLE_RATE or n > MAX_UTTERANCE_S * SAMPLE_RATE:
             return
         with _lock:
-            if _in_flight >= MAX_IN_FLIGHT:
-                return
-            executor = _get_executor()
-            if executor is None:
-                return
-            _in_flight += 1
-        try:
-            pcm = _to_pcm16_bytes(audio)
-            future = executor.submit(_work, pcm)
-        except Exception:  # noqa: BLE001
-            with _lock:
-                _in_flight -= 1
-            return
-        future.add_done_callback(lambda f, tid=turn_id: _done(tid, f))
-    except Exception:  # noqa: BLE001
+            if _pump is None:
+                _pump = threading.Thread(target=_pump_loop, name="voice-features", daemon=True)
+                _pump.start()
+        _jobs.put_nowait((turn_id, _to_pcm16_bytes(audio)))
+    except Exception:  # noqa: BLE001 - queue full or anything else: skip
         pass
 
 
@@ -151,21 +172,6 @@ def _to_pcm16_bytes(audio: Any) -> bytes:
     if a.dtype != np.int16:
         a = (np.clip(a, -1.0, 1.0) * 32767.0).astype(np.int16)
     return a.tobytes()
-
-
-def _done(turn_id: str, future: Future) -> None:
-    global _in_flight, _broken
-    try:
-        result = future.result()
-    except Exception:  # noqa: BLE001 - worker died; stop using it rather than retrying every turn
-        _broken = True
-        result = None
-    with _lock:
-        _in_flight -= 1
-        if result:
-            _results[turn_id] = result
-            while len(_results) > KEEP_RESULTS:
-                _results.popitem(last=False)
 
 
 def take(turn_ids: list[str | None]) -> list[dict[str, Any]]:
@@ -186,3 +192,7 @@ def summarize(utterances: list[dict[str, Any]]) -> dict[str, Any]:
             w = sum(d for _, d in pairs)
             out[k] = round(sum(v * d for v, d in pairs) / w, 4 if k in {"jitter_local", "shimmer_local"} else 2)
     return out
+
+
+if __name__ == "__main__":
+    _worker_main()
