@@ -21,7 +21,7 @@ def test_sanitize_delta_keeps_only_well_formed_items():
     assert delta["facts"][0]["sensitivity"] == "sensitive" and delta["facts"][0]["expiresInDays"] == 10
     assert delta["threads"][0]["notBeforeDays"] == 3 and "expiresInDays" not in delta["threads"][0]
     assert len(delta["threads"]) == 1 and "themes" not in delta
-    assert len(delta["style"]["notes"][1]) == 160
+    assert delta["style"]["notes"] == ["short answers"]
     assert sr.sanitize_delta("nonsense") == {}
 
 
@@ -59,3 +59,20 @@ def test_build_report_survives_one_call_failing(monkeypatch):
 def test_disabled_by_default(monkeypatch):
     monkeypatch.delenv(sr.ENABLED_ENV, raising=False)
     assert sr.enabled() is False
+
+
+def test_sanitize_keeps_refs_and_recurring_and_one_style_note():
+    delta = sr.sanitize_delta({
+        "facts": [{"ref": "fact_walk_20261022", "fact": "Walks daily", "recurring": True}, {"fact": "x", "recurring": "yes"}],
+        "themes": [{"ref": "theme_nature", "label": "Time outdoors"}],
+        "style": {"notes": ["short answers", "likes flattery"]},
+    })
+    assert delta["facts"][0]["ref"] == "fact_walk_20261022" and delta["facts"][0]["recurring"] is True
+    assert "recurring" not in delta["facts"][1]
+    assert delta["themes"][0]["ref"] == "theme_nature"
+    assert delta["style"]["notes"] == ["short answers"]
+
+
+def test_known_facts_are_shown_with_their_ids():
+    text = sr._compact_memory({"facts": [{"id": "fact_walk_20261022", "fact": "Walks daily", "category": "habit", "count": 3, "habit": True}]})
+    assert "fact_walk_20261022" in text and '"count":3' in text

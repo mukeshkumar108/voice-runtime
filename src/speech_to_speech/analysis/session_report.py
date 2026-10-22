@@ -27,7 +27,7 @@ ATTEMPTS_PER_MODEL = 2
 CALL_TIMEOUT_S = 75.0
 OPENER_MARKERS = ("(i've just opened the session",)
 MIN_USER_TURNS = 1
-PROMPT_VERSION = "report-v2"
+PROMPT_VERSION = "report-v3"
 RULE_VERSION = "none"
 MAX_ITEMS = 6
 
@@ -36,18 +36,18 @@ CARD_SYSTEM = """You write a private record for a gratitude companion app. You a
 {"card": {"headline": "3-6 word title", "moment": "1-2 sentences in the person's own first-person voice", "theme": "one or two words", "tags": ["up to 4 short lowercase tags"]},
  "profile": {"specificity": "general|some|specific", "people_focus": "none|mentioned|central", "feelings": "none|named|explored", "why": "none|implied|stated", "sensory": "none|some|rich", "novelty": "routine|mixed|fresh", "expression": "brief|moderate|expansive", "meaning_signal": "low|medium|high", "entry_mood": "one or two words", "exit_mood": "one or two words", "reading": "one plain sentence describing how this person reflected"}}
 
-Rules for the card: use only what the person said; no embellishment, no advice, no therapy language. If no good or grateful moment came up, set "moment" to null and "headline" to a plain description of what they talked about. Keep their wording where you can.
+Rules for the card: "moment" is one or two clean sentences that condense what they described, in their own words and first person, with the filler and repetition taken out (not a copy of their answer). Use only what the person said; no embellishment, no advice, no therapy language. If no good or grateful moment came up, set "moment" to null and "headline" to a plain description of what they talked about. Keep their wording where you can.
 Rules for the profile: this describes a style, it does not grade a person. Short, plain answers are not worse than long, vivid ones: someone who says little can still mean a lot, so judge "meaning_signal" from whether they chose to stay on something, named a person, or said why it mattered, not from how many words or sensory details they used. "expression" is only about how much they said. Never use the words good, bad, poor or weak about the person."""
 
 MEMORY_SYSTEM = """You keep a short memory of what matters to a person, from a spoken conversation between them ("user") and a gratitude companion ("assistant"). You are given what we already know and today's transcript. Reply with one JSON object and nothing else, listing only NEW or CHANGED items:
 
 {"people": [{"ref": "existing id if this is someone already known", "name": "", "relation": "", "meaning": "what they are to this person", "sensitivity": "nominal|sensitive", "basis": "paraphrase, max 20 words"}],
- "themes": [{"label": "2-5 words, a noun phrase, e.g. quiet time outdoors", "sensitivity": "nominal|sensitive", "basis": ""}],
- "facts": [{"fact": "", "category": "health|work|home|plans|other", "sensitivity": "nominal|sensitive", "expiresInDays": 14, "basis": ""}],
+ "themes": [{"ref": "existing theme id if already known", "label": "2-5 words, a noun phrase, e.g. quiet time outdoors", "sensitivity": "nominal|sensitive", "basis": ""}],
+ "facts": [{"ref": "existing fact id if this is something already known", "fact": "", "category": "health|work|home|plans|habit|other", "sensitivity": "nominal|sensitive", "expiresInDays": 14, "recurring": false, "basis": ""}],
  "threads": [{"ref": "existing thread id if updating", "topic": "", "status": "open|followed_up|resolved", "notBeforeDays": 0, "expiresInDays": 7, "suggestedCheckin": "a natural, light question", "sensitivity": "nominal|sensitive", "basis": ""}],
- "style": {"notes": ["short phrase: how this person likes to talk or what they respond to, max 3"]}}
+ "style": {"notes": ["short phrase about HOW they talk"]}}
 
-Rules: record only what the person actually said; never infer a diagnosis or a motive. Reuse "ref" ids from what we already know instead of creating duplicates. Use "sensitive" only for things that are private or painful: illness or diagnoses, mental health, grief, abuse, family conflict, money trouble, sexuality. Minor injuries, work events, plans and everyday worries are "nominal". A "thread" is something coming up or unresolved that a friend would ask about later; notBeforeDays is the number of days from today until the event has happened (work it out from today's date and weekday, e.g. an interview "on Tuesday" said on a Thursday is 5; use 0 only if it is unknown or already underway), expiresInDays is how many days from today asking would feel stale. Only return an existing thread (with its ref) if the person talked about it in THIS conversation: silence means nothing, never mark something resolved because it was not mentioned. If they said a known thread is finished, return its ref with status "resolved". "basis" is your own paraphrase, never a quote. At most 6 items per list. Use empty lists when there is nothing."""
+Rules: record only what the person actually said; if something they say matches a fact or theme we already know (same thing, different words), return it with that id in "ref" instead of adding a new one. Set "recurring" to true when they say it is regular ("every day", "I always", "most mornings") or it is already known. Style notes are only about how they talk (short or long answers, pace, humour, directness), never about what they enjoy or how they respond to you, and at most one per session; leave it out if unsure. never infer a diagnosis or a motive. Reuse "ref" ids from what we already know instead of creating duplicates. Use "sensitive" only for things that are private or painful: illness or diagnoses, mental health, grief, abuse, family conflict, money trouble, sexuality. Minor injuries, work events, plans and everyday worries are "nominal". A "thread" is something coming up or unresolved that a friend would ask about later; notBeforeDays is the number of days from today until the event has happened (work it out from today's date and weekday, e.g. an interview "on Tuesday" said on a Thursday is 5; use 0 only if it is unknown or already underway), expiresInDays is how many days from today asking would feel stale. Only return an existing thread (with its ref) if the person talked about it in THIS conversation: silence means nothing, never mark something resolved because it was not mentioned. If they said a known thread is finished, return its ref with status "resolved". "basis" is your own paraphrase, never a quote. At most 6 items per list. Use empty lists when there is nothing."""
 
 
 def enabled() -> bool:
@@ -142,13 +142,18 @@ def sanitize_delta(raw: Any) -> dict[str, Any]:
             people.append({k: v for k, v in {"ref": _str(p.get("ref"), 80), "name": _str(p.get("name"), 60),
                            "relation": _str(p.get("relation"), 60), "meaning": _str(p.get("meaning")),
                            "sensitivity": sens(p.get("sensitivity")), "basis": _str(p.get("basis"))}.items() if v})
-    themes = [{"label": _str(t.get("label"), 60), "sensitivity": sens(t.get("sensitivity")), "basis": _str(t.get("basis"))}
+    themes = [{k: v for k, v in {"ref": _str(t.get("ref"), 80), "label": _str(t.get("label"), 60),
+                                 "sensitivity": sens(t.get("sensitivity")), "basis": _str(t.get("basis"))}.items() if v}
               for t in (raw.get("themes") or [])[:MAX_ITEMS] if isinstance(t, dict) and _str(t.get("label"))]
     facts = []
     for f in (raw.get("facts") or [])[:MAX_ITEMS]:
         if isinstance(f, dict) and _str(f.get("fact")):
             item = {"fact": _str(f.get("fact")), "category": _str(f.get("category"), 30) or "other",
                     "sensitivity": sens(f.get("sensitivity")), "basis": _str(f.get("basis"))}
+            if _str(f.get("ref"), 80):
+                item["ref"] = _str(f.get("ref"), 80)
+            if f.get("recurring") is True:
+                item["recurring"] = True
             if num(f.get("expiresInDays")):
                 item["expiresInDays"] = num(f.get("expiresInDays"))
             facts.append(item)
@@ -165,7 +170,7 @@ def sanitize_delta(raw: Any) -> dict[str, Any]:
                 if num(t.get(k)) is not None:
                     item[k] = num(t.get(k))
             threads.append(item)
-    notes = [_str(n, 160) for n in ((raw.get("style") or {}).get("notes") or [])[:3] if _str(n, 160)] if isinstance(raw.get("style"), dict) else []
+    notes = [_str(n, 160) for n in ((raw.get("style") or {}).get("notes") or [])[:1] if _str(n, 160)] if isinstance(raw.get("style"), dict) else []
     for key, val in (("people", people), ("themes", themes), ("facts", facts), ("threads", threads)):
         if val:
             out[key] = val
@@ -179,7 +184,7 @@ def _compact_memory(memory: dict[str, Any]) -> str:
     return json.dumps({
         "people": keep(memory.get("people"), ("id", "name", "relation", "meaning")),
         "themes": keep(memory.get("themes"), ("id", "label")),
-        "facts": keep(memory.get("facts"), ("fact", "category")),
+        "facts": keep(memory.get("facts"), ("id", "fact", "category", "count", "habit")),
         "openThreads": keep([t for t in (memory.get("openThreads") or []) if t.get("status") in ("open", "followed_up")],
                             ("id", "topic", "status")),
     }, separators=(",", ":"))
