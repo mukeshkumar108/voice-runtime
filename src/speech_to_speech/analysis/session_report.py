@@ -27,7 +27,7 @@ ATTEMPTS_PER_MODEL = 2
 CALL_TIMEOUT_S = 75.0
 OPENER_MARKERS = ("(i've just opened the session",)
 MIN_USER_TURNS = 1
-PROMPT_VERSION = "report-v1"
+PROMPT_VERSION = "report-v2"
 RULE_VERSION = "none"
 MAX_ITEMS = 6
 
@@ -42,10 +42,10 @@ Rules for the profile: this describes a style, it does not grade a person. Short
 MEMORY_SYSTEM = """You keep a short memory of what matters to a person, from a spoken conversation between them ("user") and a gratitude companion ("assistant"). You are given what we already know and today's transcript. Reply with one JSON object and nothing else, listing only NEW or CHANGED items:
 
 {"people": [{"ref": "existing id if this is someone already known", "name": "", "relation": "", "meaning": "what they are to this person", "sensitivity": "nominal|sensitive", "basis": "paraphrase, max 20 words"}],
- "themes": [{"label": "something that matters to them", "sensitivity": "nominal|sensitive", "basis": ""}],
+ "themes": [{"label": "2-5 words, a noun phrase, e.g. quiet time outdoors", "sensitivity": "nominal|sensitive", "basis": ""}],
  "facts": [{"fact": "", "category": "health|work|home|plans|other", "sensitivity": "nominal|sensitive", "expiresInDays": 14, "basis": ""}],
  "threads": [{"ref": "existing thread id if updating", "topic": "", "status": "open|followed_up|resolved", "notBeforeDays": 0, "expiresInDays": 7, "suggestedCheckin": "a natural, light question", "sensitivity": "nominal|sensitive", "basis": ""}],
- "style": {"notes": ["how this person likes to talk or what they respond to, max 3"]}}
+ "style": {"notes": ["short phrase: how this person likes to talk or what they respond to, max 3"]}}
 
 Rules: record only what the person actually said; never infer a diagnosis or a motive. Reuse "ref" ids from what we already know instead of creating duplicates. Use "sensitive" only for things that are private or painful: illness or diagnoses, mental health, grief, abuse, family conflict, money trouble, sexuality. Minor injuries, work events, plans and everyday worries are "nominal". A "thread" is something coming up or unresolved that a friend would ask about later; notBeforeDays is the number of days from today until the event has happened (work it out from today's date and weekday, e.g. an interview "on Tuesday" said on a Thursday is 5; use 0 only if it is unknown or already underway), expiresInDays is how many days from today asking would feel stale. Only return an existing thread (with its ref) if the person talked about it in THIS conversation: silence means nothing, never mark something resolved because it was not mentioned. If they said a known thread is finished, return its ref with status "resolved". "basis" is your own paraphrase, never a quote. At most 6 items per list. Use empty lists when there is nothing."""
 

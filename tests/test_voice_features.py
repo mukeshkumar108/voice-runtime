@@ -58,3 +58,17 @@ def test_features_arrive_without_audio(monkeypatch):
 def test_summary_weights_by_duration():
     s = vf.summarize([{"duration_s": 1.0, "pause_ratio": 0.1}, {"duration_s": 3.0, "pause_ratio": 0.3}])
     assert s["utterances"] == 2 and s["pause_ratio"] == 0.25 and s["speech_seconds"] == 4.0
+
+
+def test_summary_keeps_voice_quality_only_from_clean_clips():
+    clips = [{"duration_s": 2.0, "snr_db": 30.0, "jitter_local": 0.01, "pause_ratio": 0.1},
+             {"duration_s": 2.0, "snr_db": 5.0, "jitter_local": 0.05, "pause_ratio": 0.3}]
+    s = vf.summarize(clips)
+    assert s["clean_utterances"] == 1 and s["jitter_local"] == 0.01 and s["pause_ratio"] == 0.2
+    assert "jitter_local" not in vf.summarize([clips[1]])
+
+
+def test_very_short_clips_are_not_measured(monkeypatch):
+    monkeypatch.setenv("VOICE_FEATURES_ENABLED", "1")
+    vf.submit("short", _tone(0.8))
+    assert vf._pump is None

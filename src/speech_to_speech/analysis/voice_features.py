@@ -20,7 +20,8 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
-MIN_UTTERANCE_S = 0.6
+MIN_UTTERANCE_S = 1.0       # shorter clips ("yeah", "mm") say nothing reliable about pitch or rate
+CLEAN_SNR_DB = 15.0        # voice-quality measures (jitter, shimmer, HNR) are only kept from clips at least this clean
 MAX_UTTERANCE_S = 60.0
 MAX_IN_FLIGHT = 4          # more than this and new utterances are skipped, never queued behind
 REPLY_TIMEOUT_S = 20.0     # a stuck worker is killed and replaced
@@ -55,7 +56,9 @@ def utterance_features(pcm: bytes, sr: int = SAMPLE_RATE) -> dict[str, Any]:
 
     inten = snd.to_intensity(minimum_pitch=75, time_step=0.01)
     iv = inten.values[0]
-    thr = float(np.percentile(iv, 90)) - 25.0        # "pause" = well below this utterance's own speech level
+    speech_level = float(np.percentile(iv, 90))
+    out["snr_db"] = round(speech_level - float(np.percentile(iv, 10)), 1)   # crude: speech level over the quietest tenth
+    thr = speech_level - 25.0        # "pause" = well below this utterance's own speech level
     speech = iv > thr
     out["pause_ratio"] = round(float(1 - speech.mean()), 3)
     if speech.any():
@@ -181,16 +184,25 @@ def take(turn_ids: list[str | None]) -> list[dict[str, Any]]:
 
 
 def summarize(utterances: list[dict[str, Any]]) -> dict[str, Any]:
-    """Session-level numbers: duration-weighted means over the utterances that have each feature."""
+    """Session-level numbers: duration-weighted means. Voice-quality measures (jitter, shimmer, HNR) use only clips clean enough
+    to trust; the rest use every clip. Everything is a raw, uncalibrated measurement from a phone microphone."""
     keys = ["f0_mean_hz", "f0_sd_st", "f0_range_st", "loudness_mean_db", "loudness_sd_db", "pause_ratio",
-            "syllables_per_s", "articulation_rate_syl_s", "jitter_local", "shimmer_local", "hnr_db", "voiced_fraction"]
-    out: dict[str, Any] = {"utterances": len(utterances),
+            "syllables_per_s", "articulation_rate_syl_s", "voiced_fraction", "snr_db"]
+    quality_keys = ["jitter_local", "shimmer_local", "hnr_db"]
+    clean = [u for u in utterances if u.get("snr_db", 0) >= CLEAN_SNR_DB]
+    out: dict[str, Any] = {"utterances": len(utterances), "clean_utterances": len(clean),
                            "speech_seconds": round(sum(u.get("duration_s", 0) for u in utterances), 1)}
-    for k in keys:
-        pairs = [(u[k], u.get("duration_s", 1.0)) for u in utterances if k in u]
+
+    def wmean(items: list[dict[str, Any]], k: str, digits: int) -> None:
+        pairs = [(u[k], u.get("duration_s", 1.0)) for u in items if k in u]
         if pairs:
             w = sum(d for _, d in pairs)
-            out[k] = round(sum(v * d for v, d in pairs) / w, 4 if k in {"jitter_local", "shimmer_local"} else 2)
+            out[k] = round(sum(v * d for v, d in pairs) / w, digits)
+
+    for k in keys:
+        wmean(utterances, k, 2)
+    for k in quality_keys:
+        wmean(clean, k, 4 if k != "hnr_db" else 2)
     return out
 
 
