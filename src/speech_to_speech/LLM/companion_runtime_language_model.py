@@ -226,6 +226,11 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
             "conversation_id": conversation_id,
             "user_id": identity.user_id if identity is not None else self.user_id,
             "companion_id": identity.companion_id if identity is not None else self.companion_id,
+            # The connection's identity is released when the socket closes, which can be before on_session_end
+            # runs; keep what the end-of-call report needs.
+            "report_ctx": ({"host": identity.host or call_identity.host_base_url(), "token": identity.token,
+                            "timezone": identity.timezone, "started_epoch": identity.started_epoch}
+                           if identity is not None else None),
             "messages": [*history, *([{"id": f"hist_{len(history)}", "role": "user", "content": latest_user}]
                                      if latest_user.strip() else [])],
         }
@@ -321,20 +326,19 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
         try:
             if not episode or episode.get("companion_id") != "bloom" or not session_report.enabled():
                 return
-            identity = call_identity.REGISTRY.get(episode["conversation_id"])
-            if identity is None:
+            ctx = episode.get("report_ctx")
+            if not ctx or not ctx.get("host"):
                 return
-            host = identity.host or call_identity.host_base_url()
             try:
                 from datetime import datetime
                 from zoneinfo import ZoneInfo
-                local_date = datetime.now(ZoneInfo(identity.timezone)).strftime("%Y-%m-%d")
+                local_date = datetime.now(ZoneInfo(ctx["timezone"])).strftime("%Y-%m-%d")
             except Exception:  # noqa: BLE001
                 local_date = time.strftime("%Y-%m-%d", time.gmtime())
             session_report.start(
-                host=host, token=identity.token, conversation_id=episode["conversation_id"],
+                host=ctx["host"], token=ctx["token"], conversation_id=episode["conversation_id"],
                 messages=list(episode.get("messages") or []), voice=voice,
-                duration_s=int(time.time() - identity.started_epoch) if getattr(identity, "started_epoch", None) else None,
+                duration_s=int(time.time() - ctx["started_epoch"]),
                 local_date=local_date, flow=None)
         except Exception:  # noqa: BLE001
             logger.warning("session report start failed", exc_info=True)
