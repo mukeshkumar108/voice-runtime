@@ -47,6 +47,8 @@ class CallIdentity:
     history: list[dict[str, Any]] = field(default_factory=list)
     session_routing: dict[str, Any] = field(default_factory=dict)
     turns_sent: int = 0
+    # Which session this is (morning, evening, ...): the product names it in the token; the end-of-call report uses it.
+    flow: str = ""
     # Product host this call talks to; empty means the default VOICE_HOST_URL.
     host: str = ""
     # Opaque product context from the host, passed to the brain as TurnInput.application_context.
@@ -151,6 +153,7 @@ async def load_call_context(claims: dict[str, Any], token: str) -> CallIdentity:
         started_at_iso=time.strftime("%Y-%m-%dT%H:%M:%S+00:00", time.gmtime()),
     )
     identity.host = str(claims.get("host") or "").rstrip("/")
+    identity.flow = str(claims.get("flow") or "")
     base = identity.host or host_base_url()
     if not base:
         logger.warning("%s is not set; the call starts with an empty history", HOST_URL_ENV)

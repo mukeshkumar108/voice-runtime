@@ -76,3 +76,28 @@ def test_sanitize_keeps_refs_and_recurring_and_one_style_note():
 def test_known_facts_are_shown_with_their_ids():
     text = sr._compact_memory({"facts": [{"id": "fact_walk_20261022", "fact": "Walks daily", "category": "habit", "count": 3, "habit": True}]})
     assert "fact_walk_20261022" in text and '"count":3' in text
+
+
+def test_morning_asks_for_one_evening_thread_and_ten_things_allows_ten_facts(monkeypatch):
+    seen = {}
+
+    def fake(system, user, *, api_key, client=None, models=None):
+        seen["card" if "private record" in system else "memory"] = system
+        if "private record" in system:
+            return {"card": {"headline": "x", "moment": "y"}, "profile": {}}, "m", 1, 1
+        return {"facts": [{"fact": f"quality {i}", "category": "self_regard", "recurring": True} for i in range(12)],
+                "threads": [{"topic": "Dinner with Sam", "notBeforeHour": 18, "expiresInDays": 1}]}, "m", 1, 1
+
+    monkeypatch.setattr(sr, "nano_json", fake)
+    msgs = [{"role": "user", "content": "I like that I listen well."}]
+    ten = sr.build_report(msgs, None, {}, api_key="k", local_date="2026-10-22", duration_s=60, flow="ten_things")
+    assert len(ten["memoryDelta"]["facts"]) == 10 and "self_regard" in seen["memory"] and "like about themselves" in seen["card"]
+    morning = sr.build_report(msgs, None, {}, api_key="k", local_date="2026-10-22", duration_s=60, flow="morning")
+    assert len(morning["memoryDelta"]["facts"]) == sr.MAX_ITEMS
+    assert morning["memoryDelta"]["threads"][0]["notBeforeHour"] == 18 and '"notBeforeHour": 18' in seen["memory"]
+    assert morning["flow"] == "morning"
+
+
+def test_notbeforehour_must_be_a_real_hour():
+    d = sr.sanitize_delta({"threads": [{"topic": "a", "notBeforeHour": 25}, {"topic": "b", "notBeforeHour": 18}, {"topic": "c", "notBeforeHour": True}]})
+    assert "notBeforeHour" not in d["threads"][0] and d["threads"][1]["notBeforeHour"] == 18 and "notBeforeHour" not in d["threads"][2]

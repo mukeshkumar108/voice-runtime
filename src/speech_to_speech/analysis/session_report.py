@@ -27,7 +27,7 @@ ATTEMPTS_PER_MODEL = 2
 CALL_TIMEOUT_S = 75.0
 OPENER_MARKERS = ("(i've just opened the session",)
 MIN_USER_TURNS = 1
-PROMPT_VERSION = "report-v3"
+PROMPT_VERSION = "report-v4"
 RULE_VERSION = "none"
 MAX_ITEMS = 6
 
@@ -48,6 +48,22 @@ MEMORY_SYSTEM = """You keep a short memory of what matters to a person, from a s
  "style": {"notes": ["short phrase about HOW they talk"]}}
 
 Rules: record only what the person actually said; if something they say matches a fact or theme we already know (same thing, different words), return it with that id in "ref" instead of adding a new one. Set "recurring" to true when they say it is regular ("every day", "I always", "most mornings") or it is already known. Style notes are only about how they talk (short or long answers, pace, humour, directness), never about what they enjoy or how they respond to you, and at most one per session; leave it out if unsure. never infer a diagnosis or a motive. Reuse "ref" ids from what we already know instead of creating duplicates. Use "sensitive" only for things that are private or painful: illness or diagnoses, mental health, grief, abuse, family conflict, money trouble, sexuality. Minor injuries, work events, plans and everyday worries are "nominal". A "thread" is something coming up or unresolved that a friend would ask about later; notBeforeDays is the number of days from today until the event has happened (work it out from today's date and weekday, e.g. an interview "on Tuesday" said on a Thursday is 5; use 0 only if it is unknown or already underway), expiresInDays is how many days from today asking would feel stale. Only return an existing thread (with its ref) if the person talked about it in THIS conversation: silence means nothing, never mark something resolved because it was not mentioned. If they said a known thread is finished, return its ref with status "resolved". "basis" is your own paraphrase, never a quote. At most 6 items per list. Use empty lists when there is nothing."""
+
+
+# What a session's card and memory should capture depends on which session it was. Appended to the two prompts.
+CARD_FLOW_NOTES = {
+    "morning": 'This was a MORNING session about what they are looking forward to today. "moment" is what they said they look forward to, in first person ("I\'m looking forward to..."); the headline names it. If they named nothing, "moment" is null.',
+    "ten_things": 'In this session they named things they like about themselves. "moment" lists up to four of them in first person ("I like that I..."); the headline is "What I like about me".',
+    "daytime": 'This was a short drop-in during the day. "moment" is what they caught, if anything; otherwise null.',
+    "onboarding": 'This was a first welcome conversation. No good moment is expected: set "moment" to null unless they shared one, and make the headline what brought them here.',
+}
+MEMORY_FLOW_NOTES = {
+    "morning": 'This was a morning session. Record what they said they are looking forward to as ONE thread: topic, "notBeforeHour": 18, "expiresInDays": 1, a light "suggestedCheckin" such as "How did that go?", sensitivity "nominal". If they named nothing, add no thread.',
+    "ten_things": 'In this session they named things they like about themselves. Record each one as a fact with category "self_regard", "recurring": true, sensitivity "nominal" and a paraphrased basis. Up to ten. Reuse "ref" for ones we already know.',
+    "onboarding": 'This was a welcome conversation. Record why they came and what they hope for as themes. Add no threads.',
+    "evening": 'If something we already know, such as what they were looking forward to this morning, came up, return it with its "ref" and status "followed_up" or "resolved".',
+}
+FLOW_MAX_ITEMS = {"ten_things": 10}
 
 
 def enabled() -> bool:
@@ -129,7 +145,7 @@ def _str(v: Any, limit: int = 200) -> str:
     return v.strip()[:limit] if isinstance(v, str) else ""
 
 
-def sanitize_delta(raw: Any) -> dict[str, Any]:
+def sanitize_delta(raw: Any, max_items: int = MAX_ITEMS) -> dict[str, Any]:
     """Keep only well-formed items in the shape the host accepts."""
     if not isinstance(raw, dict):
         return {}
@@ -137,16 +153,16 @@ def sanitize_delta(raw: Any) -> dict[str, Any]:
     num = lambda v: float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else None  # noqa: E731
     out: dict[str, Any] = {}
     people = []
-    for p in (raw.get("people") or [])[:MAX_ITEMS]:
+    for p in (raw.get("people") or [])[:max_items]:
         if isinstance(p, dict) and _str(p.get("name")):
             people.append({k: v for k, v in {"ref": _str(p.get("ref"), 80), "name": _str(p.get("name"), 60),
                            "relation": _str(p.get("relation"), 60), "meaning": _str(p.get("meaning")),
                            "sensitivity": sens(p.get("sensitivity")), "basis": _str(p.get("basis"))}.items() if v})
     themes = [{k: v for k, v in {"ref": _str(t.get("ref"), 80), "label": _str(t.get("label"), 60),
                                  "sensitivity": sens(t.get("sensitivity")), "basis": _str(t.get("basis"))}.items() if v}
-              for t in (raw.get("themes") or [])[:MAX_ITEMS] if isinstance(t, dict) and _str(t.get("label"))]
+              for t in (raw.get("themes") or [])[:max_items] if isinstance(t, dict) and _str(t.get("label"))]
     facts = []
-    for f in (raw.get("facts") or [])[:MAX_ITEMS]:
+    for f in (raw.get("facts") or [])[:max_items]:
         if isinstance(f, dict) and _str(f.get("fact")):
             item = {"fact": _str(f.get("fact")), "category": _str(f.get("category"), 30) or "other",
                     "sensitivity": sens(f.get("sensitivity")), "basis": _str(f.get("basis"))}
@@ -158,7 +174,7 @@ def sanitize_delta(raw: Any) -> dict[str, Any]:
                 item["expiresInDays"] = num(f.get("expiresInDays"))
             facts.append(item)
     threads = []
-    for t in (raw.get("threads") or [])[:MAX_ITEMS]:
+    for t in (raw.get("threads") or [])[:max_items]:
         if isinstance(t, dict) and (_str(t.get("topic")) or _str(t.get("ref"))):
             item = {"topic": _str(t.get("topic")), "sensitivity": sens(t.get("sensitivity")), "basis": _str(t.get("basis")),
                     "suggestedCheckin": _str(t.get("suggestedCheckin"))}
@@ -169,6 +185,9 @@ def sanitize_delta(raw: Any) -> dict[str, Any]:
             for k in ("notBeforeDays", "expiresInDays"):
                 if num(t.get(k)) is not None:
                     item[k] = num(t.get(k))
+            hour = t.get("notBeforeHour")
+            if isinstance(hour, (int, float)) and not isinstance(hour, bool) and 0 <= hour <= 23:
+                item["notBeforeHour"] = int(hour)
             threads.append(item)
     notes = [_str(n, 160) for n in ((raw.get("style") or {}).get("notes") or [])[:1] if _str(n, 160)] if isinstance(raw.get("style"), dict) else []
     for key, val in (("people", people), ("themes", themes), ("facts", facts), ("threads", threads)):
@@ -204,8 +223,10 @@ def build_report(messages: list[dict[str, Any]], voice: dict[str, Any] | None, e
     client = httpx.Client(timeout=CALL_TIMEOUT_S)
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
-            card_f = pool.submit(nano_json, CARD_SYSTEM, f"Transcript:\n{transcript}", api_key=api_key, client=client)
-            mem_f = pool.submit(nano_json, MEMORY_SYSTEM,
+            card_system = CARD_SYSTEM + (f"\n\n{CARD_FLOW_NOTES[flow]}" if flow in CARD_FLOW_NOTES else "")
+            memory_system = MEMORY_SYSTEM + (f"\n\n{MEMORY_FLOW_NOTES[flow]}" if flow in MEMORY_FLOW_NOTES else "")
+            card_f = pool.submit(nano_json, card_system, f"Transcript:\n{transcript}", api_key=api_key, client=client)
+            mem_f = pool.submit(nano_json, memory_system,
                                 f"Today is {local_date} ({weekday}).\nWhat we already know:\n{_compact_memory(existing_memory)}\n\nTranscript:\n{transcript}",
                                 api_key=api_key, client=client)
             card_r, mem_r = card_f.result(), mem_f.result()
@@ -229,7 +250,7 @@ def build_report(messages: list[dict[str, Any]], voice: dict[str, Any] | None, e
         tokens["in"] += tin; tokens["out"] += tout
     if mem_r:
         parsed, model, tin, tout = mem_r
-        report["memoryDelta"] = sanitize_delta(parsed)
+        report["memoryDelta"] = sanitize_delta(parsed, FLOW_MAX_ITEMS.get(flow or "", MAX_ITEMS))
         report["models"]["memory"] = model
         tokens["in"] += tin; tokens["out"] += tout
     report["models"]["tokens"] = tokens

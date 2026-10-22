@@ -229,7 +229,7 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
             # The connection's identity is released when the socket closes, which can be before on_session_end
             # runs; keep what the end-of-call report needs.
             "report_ctx": ({"host": identity.host or call_identity.host_base_url(), "token": identity.token,
-                            "timezone": identity.timezone, "started_epoch": identity.started_epoch}
+                            "timezone": identity.timezone, "started_epoch": identity.started_epoch, "flow": identity.flow}
                            if identity is not None else None),
             "messages": [*history, *([{"id": f"hist_{len(history)}", "role": "user", "content": latest_user}]
                                      if latest_user.strip() else [])],
@@ -339,7 +339,7 @@ class CompanionRuntimeModelHandler(BaseOpenAICompatibleHandler):
                 host=ctx["host"], token=ctx["token"], conversation_id=episode["conversation_id"],
                 messages=list(episode.get("messages") or []), voice=voice,
                 duration_s=int(time.time() - ctx["started_epoch"]),
-                local_date=local_date, flow=None)
+                local_date=local_date, flow=ctx.get("flow") or None)
         except Exception:  # noqa: BLE001
             logger.warning("session report start failed", exc_info=True)
 
