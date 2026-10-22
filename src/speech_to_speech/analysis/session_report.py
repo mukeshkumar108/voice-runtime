@@ -47,7 +47,7 @@ MEMORY_SYSTEM = """You keep a short memory of what matters to a person, from a s
  "threads": [{"ref": "existing thread id if updating", "topic": "", "status": "open|followed_up|resolved", "notBeforeDays": 0, "expiresInDays": 7, "suggestedCheckin": "a natural, light question", "sensitivity": "nominal|sensitive", "basis": ""}],
  "style": {"notes": ["how this person likes to talk or what they respond to, max 3"]}}
 
-Rules: record only what the person actually said; never infer a diagnosis or a motive. Reuse "ref" ids from what we already know instead of creating duplicates. Mark health, grief, family conflict, money, relationships and anything painful as "sensitive". A "thread" is something coming up or unresolved that a friend would ask about later; notBeforeDays is days until it has happened (0 if unknown or already underway), expiresInDays is when asking would feel stale. If a known thread was mentioned as finished, return it with its ref and status "resolved". "basis" is your own paraphrase, never a quote. At most 6 items per list. Use empty lists when there is nothing."""
+Rules: record only what the person actually said; never infer a diagnosis or a motive. Reuse "ref" ids from what we already know instead of creating duplicates. Use "sensitive" only for things that are private or painful: illness or diagnoses, mental health, grief, abuse, family conflict, money trouble, sexuality. Minor injuries, work events, plans and everyday worries are "nominal". A "thread" is something coming up or unresolved that a friend would ask about later; notBeforeDays is the number of days from today until the event has happened (work it out from today's date and weekday, e.g. an interview "on Tuesday" said on a Thursday is 5; use 0 only if it is unknown or already underway), expiresInDays is how many days from today asking would feel stale. Only return an existing thread (with its ref) if the person talked about it in THIS conversation: silence means nothing, never mark something resolved because it was not mentioned. If they said a known thread is finished, return its ref with status "resolved". "basis" is your own paraphrase, never a quote. At most 6 items per list. Use empty lists when there is nothing."""
 
 
 def enabled() -> bool:
@@ -191,12 +191,17 @@ def build_report(messages: list[dict[str, Any]], voice: dict[str, Any] | None, e
     if sum(1 for role, _ in turns if role == "Person") < MIN_USER_TURNS:
         return None
     transcript = _transcript_text(turns)
+    try:
+        from datetime import date
+        weekday = date.fromisoformat(local_date).strftime("%A")
+    except ValueError:
+        weekday = "unknown weekday"
     client = httpx.Client(timeout=CALL_TIMEOUT_S)
     try:
         with ThreadPoolExecutor(max_workers=2) as pool:
             card_f = pool.submit(nano_json, CARD_SYSTEM, f"Transcript:\n{transcript}", api_key=api_key, client=client)
             mem_f = pool.submit(nano_json, MEMORY_SYSTEM,
-                                f"Today is {local_date}.\nWhat we already know:\n{_compact_memory(existing_memory)}\n\nTranscript:\n{transcript}",
+                                f"Today is {local_date} ({weekday}).\nWhat we already know:\n{_compact_memory(existing_memory)}\n\nTranscript:\n{transcript}",
                                 api_key=api_key, client=client)
             card_r, mem_r = card_f.result(), mem_f.result()
     finally:
