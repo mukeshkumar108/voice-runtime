@@ -110,7 +110,23 @@ def test_a_morning_thread_is_always_held_until_six_in_the_evening(monkeypatch):
         return {"threads": [{"topic": "Dinner with my sister", "notBeforeDays": 0, "expiresInDays": 6}, {"ref": "thread_old", "topic": "", "status": "resolved"}]}, "m", 1, 1
 
     monkeypatch.setattr(sr, "nano_json", fake)
-    r = sr.build_report([{"role": "user", "content": "looking forward to dinner"}], None, {}, api_key="k", local_date="2026-10-22", duration_s=60, flow="morning")
+    known = {"openThreads": [{"id": "thread_old", "topic": "Old thing", "status": "open"}]}
+    r = sr.build_report([{"role": "user", "content": "looking forward to dinner"}], None, known, api_key="k", local_date="2026-10-22", duration_s=60, flow="morning")
     new, old = r["memoryDelta"]["threads"]
     assert new["notBeforeHour"] == 18 and new["expiresInDays"] == 1.0 and "notBeforeDays" not in new
     assert "notBeforeHour" not in old and old["status"] == "resolved"
+
+
+def test_a_ref_the_model_invented_is_dropped_but_a_real_one_is_kept(monkeypatch):
+    def fake(system, user, *, api_key, client=None, models=None):
+        if "private record" in system:
+            return {"card": {"headline": "x", "moment": "y"}, "profile": {}}, "m", 1, 1
+        return {"facts": [{"ref": "t1", "fact": "new thing"}, {"ref": "fact_walk_20261022", "fact": "walks daily", "recurring": True}],
+                "threads": [{"ref": "t1", "topic": "Dinner"}]}, "m", 1, 1
+
+    monkeypatch.setattr(sr, "nano_json", fake)
+    r = sr.build_report([{"role": "user", "content": "hi"}], None, {"facts": [{"id": "fact_walk_20261022", "fact": "walks"}]},
+                        api_key="k", local_date="2026-10-22", duration_s=1, flow="morning")
+    facts = r["memoryDelta"]["facts"]
+    assert "ref" not in facts[0] and facts[1]["ref"] == "fact_walk_20261022"
+    assert "ref" not in r["memoryDelta"]["threads"][0] and r["memoryDelta"]["threads"][0]["notBeforeHour"] == 18

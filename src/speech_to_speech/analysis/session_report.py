@@ -251,6 +251,11 @@ def build_report(messages: list[dict[str, Any]], voice: dict[str, Any] | None, e
     if mem_r:
         parsed, model, tin, tout = mem_r
         report["memoryDelta"] = sanitize_delta(parsed, FLOW_MAX_ITEMS.get(flow or "", MAX_ITEMS))
+        known = {i.get("id") for key in ("people", "themes", "facts", "openThreads") for i in (existing_memory.get(key) or []) if isinstance(i, dict)}
+        for key in ("people", "themes", "facts", "threads"):
+            for item in report["memoryDelta"].get(key, []):
+                if item.get("ref") not in known:
+                    item.pop("ref", None)       # a ref the model made up points at nothing: treat the item as new
         if flow == "morning":
             # A morning intention is for the evening. The model often leaves the timing out, so it is not left to the model.
             for thread in report["memoryDelta"].get("threads", []):
