@@ -19,7 +19,7 @@ from openai.types.realtime import (
     SessionUpdateEvent,
 )
 
-from speech_to_speech import call_identity
+from speech_to_speech import call_identity, experiences_api
 from speech_to_speech.api.openai_realtime.pipeline_unit import PipelineUnit, SessionState
 from speech_to_speech.api.openai_realtime.service import (
     PIPELINE_SAMPLE_RATE,
@@ -440,6 +440,7 @@ def create_app(pool: list[PipelineUnit], stop_event: ThreadingEvent) -> FastAPI:
                     pass
 
     app = FastAPI(lifespan=lifespan)
+    experiences_api.register(app)
 
     def _claim_unit(transport: SessionTransport | None) -> PipelineUnit | None:
         """Atomically (between asyncio yield points) reserve the first idle unit.

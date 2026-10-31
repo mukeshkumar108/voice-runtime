@@ -68,7 +68,7 @@ def allowed_hosts() -> frozenset[str]:
     return frozenset(h.strip().rstrip("/") for h in raw.split(",") if h.strip())
 
 
-def verify_token(token: Optional[str], now: Optional[float] = None) -> Optional[dict[str, Any]]:
+def verify_token(token: Optional[str], now: Optional[float] = None, ignore_expiry: bool = False) -> Optional[dict[str, Any]]:
     """Verify an HMAC-SHA256 token issued by the product host."""
     secret = os.getenv(SECRET_ENV, "").strip()
     if not secret or not token or "." not in token:
@@ -87,7 +87,7 @@ def verify_token(token: Optional[str], now: Optional[float] = None) -> Optional[
         return None
     if not all(isinstance(claims.get(k), str) for k in ("uid", "cid", "tz")):
         return None
-    if float(claims.get("exp", 0)) < (now if now is not None else time.time()):
+    if not ignore_expiry and float(claims.get("exp", 0)) < (now if now is not None else time.time()):
         return None
     # A token naming another product host is only honoured for allow-listed origins; otherwise the
     # call would send its transcript to a host the operator never approved.
@@ -113,6 +113,13 @@ class IdentityRegistry:
             return None
         with self._lock:
             return self._items.get(conversation_id)
+
+    def find_by_token(self, token: Optional[str]) -> Optional[CallIdentity]:
+        """The live call that was opened with this token (None once the call has ended)."""
+        if not token:
+            return None
+        with self._lock:
+            return next((i for i in self._items.values() if i.token == token), None)
 
     def release(self, conversation_id: Optional[str]) -> None:
         if not conversation_id:
