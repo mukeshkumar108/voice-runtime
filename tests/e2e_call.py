@@ -6,7 +6,7 @@ streams it as microphone audio into the deployed Voice Runtime over WSS, and
 reports: transcripts, streamed audio back, completion, and what the product host
 now holds as chat history.
 
-  HOST=https://project-z963i.vercel.app CHAT_ID=<uuid> LEMONFOX_API_KEY=... \
+  HOST=https://sophie.161-97-150-246.sslip.io CHAT_ID=<uuid> LEMONFOX_API_KEY=... \
     PYTHONPATH=src:. python tests/e2e_call.py
 """
 import asyncio, base64, json, os, sys, time, uuid
